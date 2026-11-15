@@ -1,0 +1,23 @@
+pkgname=livesheet
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='A keyboard-only math notebook with live, textbook-style rendering'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=('qt6-base' 'qt6-declarative' 'qt6-webengine' 'qt6-wayland' 'xdg-desktop-portal' 'texlive-bin')
+makedepends=('gcc' 'make')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/livesheet "$pkgdir/usr/bin/livesheet"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$startdir/livesheet.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/livesheet.svg"
+  install -Dm644 "$startdir/livesheet.desktop" "$pkgdir/usr/share/applications/livesheet.desktop"
+}

@@ -1,0 +1,846 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="mathquill/mathquill.css">
+<script src="jquery/jquery.min.js"></script>
+<script src="mathquill/mathquill.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    background: #0e0e10;
+    color: #e6e6e6;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+  }
+  #notebook {
+    padding: 40px 48px;
+    max-width: 820px;
+    margin: 0 auto;
+  }
+  .line {
+    margin: 10px 0;
+    outline: none;
+    min-height: 1.4em;
+  }
+  .line.pending {
+    font-size: 1.3em;
+  }
+  .line.heading-title {
+    font-size: 1.9em;
+    font-weight: bold;
+    text-align: center;
+    margin: 0.4em 0 1em;
+  }
+  .line.heading-paragraph {
+    font-size: 1.25em;
+    font-weight: bold;
+    margin: 1em 0 0.3em;
+  }
+  .line.heading-subparagraph {
+    font-size: 1.05em;
+    font-style: italic;
+    font-weight: bold;
+    margin: 0.8em 0 0.2em;
+  }
+  .line.math-line {
+    font-size: 1.3em;
+    display: block;
+  }
+  /* A matrix line is a flex row of three things: a left bracket, the
+     grid of cells, and a right bracket. align-items: stretch (the flex
+     default) is what makes both brackets grow to match the grid's full
+     height automatically, however many rows it has. */
+  .line.matrix-line {
+    font-size: 1.3em;
+    display: flex;
+    align-items: stretch;
+  }
+  /* Each bracket is drawn with plain borders rather than a stretched
+     character glyph, since a glyph doesn't resize cleanly to an
+     arbitrary height: the top/bottom borders are the bracket's "caps"
+     and matrix-bracket-left/right add the long vertical stroke. */
+  .matrix-bracket {
+    width: 8px;
+    border-top: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    margin: 2px 0;
+  }
+  .matrix-bracket-left {
+    border-left: 2px solid currentColor;
+    margin-right: 6px;
+  }
+  .matrix-bracket-right {
+    border-right: 2px solid currentColor;
+    margin-left: 6px;
+  }
+  /* All cells (from every row) are direct children of this one grid —
+     see addCellToRow()'s comment for why that's what lets columns line
+     up across rows. grid-template-columns is set from JS (growMatrixColumns)
+     since the column count isn't known until cells exist. */
+  .matrix-grid {
+    display: grid;
+    align-items: center;
+    justify-items: center;
+    align-content: center;
+    row-gap: 10px;
+    column-gap: 26px;
+    padding: 4px 0;
+  }
+  .matrix-cell {
+    display: inline-block;
+  }
+  /* MathQuill's own field chrome (border/shadow, defaults to a light
+     theme) is replaced here to blend into this page's dark background. */
+  .mq-editable-field {
+    border: none !important;
+    box-shadow: none !important;
+    color: #e6e6e6;
+  }
+  .mq-editable-field .mq-cursor {
+    border-color: #e6e6e6 !important;
+  }
+</style>
+</head>
+<body>
+  <div id="notebook"></div>
+  <script>
+    // The notebook is an ordered array of "line" objects, each one of:
+    //   - "pending": a plain contenteditable div that hasn't decided what
+    //     it is yet. It becomes one of the other types on its first
+    //     keystroke (see wirePendingInput) and then never goes back,
+    //     except a matrix can revert to pending if emptied out.
+    //   - "heading-1"/"heading-2"/"heading-3": a plain contenteditable div
+    //     styled as a title/paragraph/subparagraph heading.
+    //   - "math": one MathQuill field — the normal case for a line of math.
+    //   - "matrix": a grid of small MathQuill fields (one per cell) instead
+    //     of a single field; see the matrix functions below.
+    // Every line keeps its spot in the `lines` array and in the #notebook
+    // DOM in sync, so `lines[i]` and the i-th child of #notebook always
+    // refer to the same line.
+    var MQ = MathQuill.getInterface(2);
+    var notebook = document.getElementById("notebook");
+    var lines = [];
+
+    // Where a line currently sits in `lines`, or -1 if it's been removed.
+    function indexOf(line) { return lines.indexOf(line); }
+
+    // Focuses a plain contenteditable element with the cursor collapsed
+    // to its end — the DOM has no built-in "focus and go to the end" op.
+    function placeCaretAtEnd(el) {
+      el.focus();
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    // The one place that knows how to put the cursor into any line type.
+    // `toEnd` asks to land at the line's last position rather than its
+    // first — used when arriving from below (e.g. Backspace merging into
+    // the previous line, or Shift+Tab/Up out of the line after this one).
+    function focusLine(line, toEnd) {
+      if (!line) return;
+      if (line.type === "math") line.mathField.focus();
+      else if (line.type === "matrix") {
+        var r = toEnd ? line.rows.length - 1 : 0;
+        focusCell(line, r, toEnd ? line.rows[r].length - 1 : 0);
+      }
+      else if (toEnd) placeCaretAtEnd(line.el);
+      else line.el.focus();
+    }
+
+    // Drops a line from both the DOM and the `lines` array. Does not
+    // move focus anywhere — callers are expected to do that themselves.
+    function removeLine(line) {
+      var i = indexOf(line);
+      if (i === -1) return;
+      lines.splice(i, 1);
+      line.el.remove();
+    }
+
+    // Creates a new empty (pending) line right after `line`, in both the
+    // DOM and the `lines` array, and returns it without focusing it.
+    function insertLineAfter(line) {
+      var newLine = createPendingLine();
+      line.el.after(newLine.el);
+      lines.splice(indexOf(newLine), 1);
+      lines.splice(indexOf(line) + 1, 0, newLine);
+      return newLine;
+    }
+
+    // Enter handler shared by every regular math line (wired up in
+    // convertToMath): always inserts a new line below and moves there,
+    // regardless of where the cursor was.
+    function onEnter(line) {
+      focusLine(insertLineAfter(line));
+    }
+
+    // Backspace handler shared by every regular math line. MathQuill only
+    // calls this once a field is already empty and there's nothing left
+    // to delete within it (dir is which way the deletion was headed), so
+    // by this point it just means "remove this now-empty line and land
+    // at the end of whatever's above it."
+    function onDeleteOutOf(line, dir) {
+      if (dir !== MQ.L) return;
+      var i = indexOf(line);
+      if (i <= 0) return;
+      var prev = lines[i - 1];
+      removeLine(line);
+      focusLine(prev, true);
+    }
+
+    // Left/Right-arrow handler shared by every regular math line: once a
+    // field has nothing left to move through in that direction, step
+    // into the previous/next line instead of leaving the cursor stuck.
+    function onMoveOutOf(line, dir) {
+      var i = indexOf(line);
+      if (dir === MQ.L && i > 0) focusLine(lines[i - 1], true);
+      if (dir === MQ.R && i < lines.length - 1) focusLine(lines[i + 1]);
+    }
+
+    // Turns a pending line into a Title/Paragraph/Subparagraph heading
+    // (level 1/2/3): swaps in the matching CSS class, clears the "# "/
+    // "## "/"### " marker that triggered this, and leaves the cursor
+    // ready for the heading's actual text.
+    function convertToHeading(line, level) {
+      var cls = level === 1 ? "heading-title" : level === 2 ? "heading-paragraph" : "heading-subparagraph";
+      line.el.className = "line " + cls;
+      line.el.textContent = "";
+      line.type = "heading-" + level;
+      placeCaretAtEnd(line.el);
+    }
+
+    // A tiny LaTeX evaluator: just enough of the grammar MathQuill produces
+    // (numbers, single-letter variables, +-, implicit/explicit *, /, \frac,
+    // \sqrt, \sqrt[n]{}, ^, parens) to turn what's on a line into a number.
+    // It's a standard recursive-descent parser, structured by operator
+    // precedence from loosest to tightest binding: parseExpr (+ -) calls
+    // parseTerm (* /, including two letters next to each other meaning
+    // multiply) calls parsePow (^) calls parseUnary (leading - or +) calls
+    // parseAtom (numbers, variables, \sqrt, \frac, parens — the actual
+    // "things" the operators above combine). Throws on anything it can't
+    // parse or on an undefined variable; callers are expected to catch that
+    // and treat it as "can't evaluate yet" rather than a hard error.
+    function evaluateLatex(latex, vars) {
+      // `src`/`pos` are this call's cursor into the LaTeX string; evalSub()
+      // below temporarily repoints them at a nested group's text (a \frac's
+      // numerator, a \sqrt's radicand, ...) and restores them afterward, so
+      // the same parseExpr() can be reused for both the top level and every
+      // nested group without passing the string around explicitly.
+      var src = latex, pos = 0;
+
+      // The character at the cursor, or undefined past the end.
+      function peek() { return src[pos]; }
+      // Skips spaces and LaTeX's "\ " non-breaking space marker.
+      function skipWs() { while (src[pos] === " " || src[pos] === "~") pos++; }
+      // If the text at the cursor starts with `lit`, consumes it and
+      // returns true; otherwise leaves the cursor alone and returns false.
+      // Every token-level check below is built on this.
+      function eat(lit) {
+        skipWs();
+        if (src.startsWith(lit, pos)) { pos += lit.length; return true; }
+        return false;
+      }
+      // Consumes a brace-delimited {...} group (as used by \frac{}{} and
+      // \sqrt{}) and returns its contents, tracking nested braces so an
+      // inner {..} doesn't end the group early.
+      function parseGroup() {
+        skipWs();
+        if (src[pos] !== "{") throw new Error("expected {");
+        pos++;
+        var depth = 1, start = pos;
+        while (depth > 0) {
+          if (pos >= src.length) throw new Error("unbalanced {");
+          if (src[pos] === "{") depth++;
+          else if (src[pos] === "}") depth--;
+          if (depth > 0) pos++;
+        }
+        var inner = src.slice(start, pos);
+        pos++;
+        return inner;
+      }
+      // Same idea as parseGroup() but for a \sqrt[...]'s optional bracketed
+      // root index; returns null (rather than throwing) when there's no
+      // "[" at all, since that's the normal case for a plain square root.
+      function parseBracketGroup() {
+        skipWs();
+        if (src[pos] !== "[") return null;
+        pos++;
+        var depth = 1, start = pos;
+        while (depth > 0) {
+          if (pos >= src.length) throw new Error("unbalanced [");
+          if (src[pos] === "[") depth++;
+          else if (src[pos] === "]") depth--;
+          if (depth > 0) pos++;
+        }
+        var inner = src.slice(start, pos);
+        pos++;
+        return inner;
+      }
+      // Evaluates a separate snippet of LaTeX (the contents of a group
+      // parseGroup()/parseBracketGroup() just extracted) as its own
+      // complete expression, then restores the outer parse's position so
+      // it can carry on where it left off.
+      function evalSub(text) {
+        var savedSrc = src, savedPos = pos;
+        src = text; pos = 0;
+        var v = parseExpr();
+        src = savedSrc; pos = savedPos;
+        return v;
+      }
+
+      // Loosest-binding level: a left-to-right chain of + and -.
+      function parseExpr() {
+        var v = parseTerm();
+        for (;;) {
+          if (eat("+")) v += parseTerm();
+          else if (eat("-")) v -= parseTerm();
+          else break;
+        }
+        return v;
+      }
+      // Multiplication and division, including MathQuill's \cdot/\times
+      // and a bare "*", plus implicit multiplication: if the next thing
+      // looks like the start of another atom (a digit, letter, backslash
+      // command, or open paren) with no operator in between, that's
+      // "2x" or "xy" style juxtaposition, so multiply by it anyway.
+      function parseTerm() {
+        var v = parsePow();
+        for (;;) {
+          if (eat("\\cdot") || eat("\\times") || eat("*")) v *= parsePow();
+          else if (eat("\\div")) v /= parsePow();
+          else {
+            skipWs();
+            var c = peek();
+            if (c && /[0-9a-zA-Z\\(]/.test(c)) v *= parsePow();
+            else break;
+          }
+        }
+        return v;
+      }
+      // Exponentiation: "^" followed by either a braced group (as
+      // MathQuill writes a multi-character exponent) or a single atom.
+      function parsePow() {
+        var v = parseUnary();
+        if (eat("^")) {
+          skipWs();
+          var exp = peek() === "{" ? evalSub(parseGroup()) : parseUnary();
+          v = Math.pow(v, exp);
+        }
+        return v;
+      }
+      // A leading run of unary - or + signs in front of an atom.
+      function parseUnary() {
+        if (eat("-")) return -parseUnary();
+        if (eat("+")) return parseUnary();
+        return parseAtom();
+      }
+      // The tightest-binding level: the actual values and function-like
+      // forms everything above combines — a number, a single-letter
+      // variable (looked up in `vars`), a \sqrt (with an optional [n] for
+      // an nth root), a \frac, or a parenthesized sub-expression.
+      function parseAtom() {
+        skipWs();
+        if (eat("\\sqrt")) {
+          var idx = parseBracketGroup();
+          var radicand = evalSub(parseGroup());
+          return idx !== null ? Math.pow(radicand, 1 / evalSub(idx)) : Math.sqrt(radicand);
+        }
+        if (eat("\\frac")) {
+          var num = evalSub(parseGroup());
+          var den = evalSub(parseGroup());
+          return num / den;
+        }
+        if (eat("(")) {
+          var v = parseExpr();
+          eat(")");
+          return v;
+        }
+        var m = /^[0-9]+(\.[0-9]+)?/.exec(src.slice(pos));
+        if (m) { pos += m[0].length; return parseFloat(m[0]); }
+        var c = peek();
+        if (c && /[a-zA-Z]/.test(c)) {
+          pos++;
+          if (!(c in vars)) throw new Error("undefined variable " + c);
+          return vars[c];
+        }
+        throw new Error("unexpected token at " + pos + " in " + src);
+      }
+
+      var result = parseExpr();
+      skipWs();
+      // Anything left over after a complete expression means the grammar
+      // above didn't cover something in this LaTeX (or it's malformed) —
+      // treated the same as any other parse failure, via the caller's catch.
+      if (pos < src.length) throw new Error("trailing input");
+      return result;
+    }
+
+    // Builds {letter: value} from every earlier "x:=expr" line, in document
+    // order, so a later line can reference anything defined above it. Each
+    // definition is evaluated using the variables collected so far, so
+    // "b:=a+1" after "a:=2" works; a definition that fails to evaluate (bad
+    // syntax, or referencing something not yet defined) is just skipped,
+    // leaving that letter undefined for anything below it.
+    function collectVariables(line) {
+      var vars = {};
+      var stop = indexOf(line);
+      for (var k = 0; k < stop; k++) {
+        var l = lines[k];
+        if (l.type !== "math") continue;
+        var m = /^([a-zA-Z]):=(.+)$/.exec(l.mathField.latex());
+        if (!m) continue;
+        try { vars[m[1]] = evaluateLatex(m[2], vars); } catch (e) { /* skip bad/circular defs */ }
+      }
+      return vars;
+    }
+
+    // Turns an evaluation result into the text to type after "=": a whole
+    // number prints as itself (dropping floating-point noise like
+    // 2.9999999996), anything else is rounded to 6 decimal places.
+    function formatNumber(x) {
+      if (!isFinite(x)) throw new Error("not finite");
+      if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
+      return String(Math.round(x * 1e6) / 1e6);
+    }
+
+    // Evaluates everything on the line BEFORE the "=" the user just typed
+    // (exprLatex, captured before insertion) and types the result after it.
+    // Leaves just the "=" if the expression can't be evaluated yet (e.g. it
+    // references a variable that hasn't been defined above).
+    function evaluateAndAppend(line, exprLatex) {
+      try {
+        var vars = collectVariables(line);
+        var result = evaluateLatex(exprLatex, vars);
+        line.mathField.typedText(formatNumber(result));
+      } catch (e) { /* leave just the "=" */ }
+    }
+
+    // The single place that types one character into a math line's field,
+    // used both for live keystrokes (the global listener below) and for
+    // replaying a pending line's buffered text once it's decided to become
+    // a math line (convertToMath). A handful of characters get special
+    // treatment instead of being typed literally — see each branch.
+    function insertChar(line, ch) {
+      var mathField = line.mathField;
+      if (ch === ":") mathField.typedText(":=");
+      else if (ch === "\\") mathField.cmd("\\sqrt");
+      else if (ch === "|") mathField.cmd("\\nthroot");
+      else if (ch === "=") {
+        var exprLatex = mathField.latex();
+        // Jump out of whatever block the cursor is sitting in (e.g. a root's
+        // radicand) first, so "=" and the result land after the whole
+        // expression instead of extending the root's bar over them too.
+        mathField.moveToRightEnd();
+        mathField.typedText("=");
+        evaluateAndAppend(line, exprLatex);
+      } else mathField.typedText(ch);
+    }
+
+    // Turns a pending line into a regular math line: swaps its plain div
+    // for a MathQuill field, wires up Enter/Backspace/Left/Right to chain
+    // to the next/previous line, and replays whatever text the user had
+    // already typed (the character that made this stop being "pending",
+    // e.g. a single "/" that should open a fraction) through insertChar()
+    // so it's interpreted the same way a live keystroke would be.
+    function convertToMath(line, buffered) {
+      var container = document.createElement("span");
+      container.className = "line math-line";
+      line.el.replaceWith(container);
+      line.el = container;
+      line.type = "math";
+      var mathField = MQ.MathField(container, {
+        handlers: {
+          enter: function () { onEnter(line); },
+          deleteOutOf: function (dir) { onDeleteOutOf(line, dir); },
+          moveOutOf: function (dir) { onMoveOutOf(line, dir); }
+        }
+      });
+      line.mathField = mathField;
+      container._line = line;
+      for (var k = 0; k < buffered.length; k++) insertChar(line, buffered[k]);
+      mathField.focus();
+    }
+
+    // A matrix is its own line type: a grid of small MathQuill fields (one
+    // per cell) between two CSS-drawn brackets, rather than a single field.
+    // "," appends a cell to the current row, ";" starts a new row, and
+    // Backspace/Tab chain the cells together the same way lines chain.
+    // line.rows is a 2D array mirroring the grid: line.rows[r][c] is the
+    // MathQuill field for that cell (or undefined if it doesn't exist).
+    function focusCell(line, r, c) {
+      if (line.rows[r] && line.rows[r][c]) line.rows[r][c].focus();
+    }
+
+    // Adds a new, empty row to the matrix's bookkeeping (line.rows) and
+    // returns its index. Doesn't touch the DOM or create any cells itself
+    // — callers immediately follow this with addCellToRow() to actually
+    // give the new row its first cell.
+    function addRow(line) {
+      line.rows.push([]);
+      return line.rows.length - 1;
+    }
+
+    // Finds the DOM element for a given cell by the data-row/data-col
+    // attributes addCellToRow() stamps onto it. Only needed for removing a
+    // cell (matrixDeleteOutOf) — day-to-day focus/typing goes through the
+    // MathQuill field stored in line.rows, never the element directly.
+    function cellElementAt(line, r, c) {
+      return line.grid.querySelector('.matrix-cell[data-row="' + r + '"][data-col="' + c + '"]');
+    }
+
+    // Widens the grid's column count if this cell needs a column further
+    // right than any seen so far. Columns only ever grow, never shrink —
+    // removing the last cell in the widest column leaves a harmlessly
+    // unused (zero-width, since nothing occupies it) column track behind.
+    function growMatrixColumns(line, atLeast) {
+      var cols = Math.max(line.maxCols || 0, atLeast);
+      if (cols === line.maxCols) return;
+      line.maxCols = cols;
+      line.grid.style.gridTemplateColumns = "repeat(" + cols + ", minmax(1.2em, max-content))";
+    }
+
+    // Appends one new cell (a MathQuill field) to the end of row `r` and
+    // returns it. All cells are direct children of the matrix's one CSS
+    // grid — placed by explicit grid-row/grid-column rather than nested
+    // inside a per-row container — so every row shares the same column
+    // tracks: a column's width is set by its widest cell, and narrower
+    // ones (e.g. "1" under "10") sit centered within that shared width.
+    function addCellToRow(line, r) {
+      var c = line.rows[r].length;
+      var cellEl = document.createElement("span");
+      cellEl.className = "matrix-cell";
+      cellEl.dataset.row = r;
+      cellEl.dataset.col = c;
+      // CSS grid lines are 1-indexed, hence the +1s.
+      cellEl.style.gridRow = r + 1;
+      cellEl.style.gridColumn = c + 1;
+      line.grid.appendChild(cellEl);
+      growMatrixColumns(line, c + 1);
+      var mathField = MQ.MathField(cellEl, {
+        handlers: {
+          enter: function () { exitMatrix(line); },
+          deleteOutOf: function (dir) { matrixDeleteOutOf(line, r, c, dir); },
+          moveOutOf: function (dir) { matrixMoveOutOf(line, r, c, dir); }
+        }
+      });
+      // Lets the global keydown listener (which only has the DOM event's
+      // target to start from) map a cell back to its line and position —
+      // the same role cellEl.dataset.row/col play for cellElementAt(), but
+      // as live object references instead of strings for quick access.
+      cellEl._line = line;
+      cellEl._row = r;
+      cellEl._col = c;
+      line.rows[r].push(mathField);
+      return mathField;
+    }
+
+    // Enter handler shared by every matrix cell: finishes the matrix
+    // entirely and moves to a new line below it, the same as onEnter()
+    // does for a regular math line.
+    function exitMatrix(line) {
+      focusLine(insertLineAfter(line));
+    }
+
+    // Stepping out of the matrix forward never dead-ends: if there's no
+    // next line yet, one is created, the same way Enter always gets you
+    // somewhere. Stepping out backward only moves to a line that already
+    // exists — inserting a blank one above would be more surprising there.
+    function exitMatrixForward(line) {
+      focusLine(lines[indexOf(line) + 1] || insertLineAfter(line));
+    }
+    function exitMatrixBackward(line) {
+      var prev = lines[indexOf(line) - 1];
+      if (prev) focusLine(prev, true);
+    }
+
+    // Left/Right at a cell's edge (nothing left to move into within it)
+    // steps to the next cell, wrapping at row boundaries — the same hook
+    // regular math lines use to chain Left/Right between lines. At the
+    // outer edge of the whole matrix, it steps out to the adjacent
+    // notebook line instead of getting stuck.
+    function matrixMoveOutOf(line, r, c, dir) {
+      if (dir === MQ.L) {
+        if (c > 0) focusCell(line, r, c - 1);
+        else if (r > 0) focusCell(line, r - 1, line.rows[r - 1].length - 1);
+        else exitMatrixBackward(line);
+      } else if (dir === MQ.R) {
+        if (c < line.rows[r].length - 1) focusCell(line, r, c + 1);
+        else if (r < line.rows.length - 1) focusCell(line, r + 1, 0);
+        else exitMatrixForward(line);
+      }
+    }
+
+    // Reverses convertToMatrix: turns the (now-empty) matrix line back into
+    // a plain editable pending line, the same way an empty heading or math
+    // line disappears when you backspace through it.
+    function revertToPending(line) {
+      var el = document.createElement("div");
+      el.className = "line pending";
+      el.contentEditable = "true";
+      el.spellcheck = false;
+      line.el.replaceWith(el);
+      line.el = el;
+      line.type = "pending";
+      delete line.rows;
+      delete line.grid;
+      wireLineKeydown(line);
+      wirePendingInput(line);
+      return line;
+    }
+
+    // Only the trailing cell (last column of the last row) deletes anything;
+    // backspacing inside an earlier empty cell is left to MathQuill (nothing
+    // to delete there, so it's a no-op), which keeps this simple.
+    function matrixDeleteOutOf(line, r, c, dir) {
+      if (dir !== MQ.L) return;
+      var lastRow = line.rows.length - 1;
+      var lastCol = line.rows[lastRow].length - 1;
+      if (r !== lastRow || c !== lastCol) return;
+
+      if (line.rows.length === 1 && line.rows[0].length === 1) {
+        focusLine(revertToPending(line), true);
+        return;
+      }
+      var el = cellElementAt(line, r, c);
+      if (el) el.remove();
+      line.rows[r].pop();
+      if (line.rows[r].length === 0) {
+        line.rows.pop();
+        focusCell(line, line.rows.length - 1, line.rows[line.rows.length - 1].length - 1);
+      } else {
+        focusCell(line, r, line.rows[r].length - 1);
+      }
+    }
+
+    // Turns a pending line into a matrix: swaps its plain div for the
+    // bracket+grid structure (see the .matrix-line CSS), then adds one
+    // empty row with one empty cell and focuses it — the starting point
+    // for a brand-new 1x1 matrix the user can grow with "," and ";".
+    function convertToMatrix(line) {
+      var container = document.createElement("div");
+      container.className = "line matrix-line";
+      line.el.replaceWith(container);
+      line.el = container;
+      line.type = "matrix";
+      line.rows = [];
+
+      var leftBracket = document.createElement("div");
+      leftBracket.className = "matrix-bracket matrix-bracket-left";
+      var grid = document.createElement("div");
+      grid.className = "matrix-grid";
+      var rightBracket = document.createElement("div");
+      rightBracket.className = "matrix-bracket matrix-bracket-right";
+      container.appendChild(leftBracket);
+      container.appendChild(grid);
+      container.appendChild(rightBracket);
+      line.grid = grid;
+
+      var r = addRow(line);
+      addCellToRow(line, r).focus();
+    }
+
+    // The LaTeX form used for export: a standard bmatrix environment.
+    function matrixLatex(line) {
+      var rows = line.rows.map(function (row) {
+        return row.map(function (field) { return field.latex(); }).join(" & ");
+      });
+      return "\\begin{bmatrix}" + rows.join(" \\\\ ") + "\\end{bmatrix}";
+    }
+
+    // Enter/Backspace for a plain contenteditable line — used by pending
+    // lines and (since convertToHeading never replaces the element, only
+    // its class/content) heading lines too. Enter always inserts a new
+    // line below; Backspace only does something special when the line is
+    // already empty, in which case it removes the line and lands the
+    // cursor at the end of whatever's above it. A non-empty line's
+    // Backspace is left alone, so it just deletes text normally.
+    function wireLineKeydown(line) {
+      line.el.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onEnter(line);
+        } else if (e.key === "Backspace" && line.el.textContent === "") {
+          var i = indexOf(line);
+          if (i > 0) {
+            e.preventDefault();
+            var prev = lines[i - 1];
+            removeLine(line);
+            focusLine(prev, true);
+          }
+        }
+      });
+    }
+
+    // Watches a pending line's typed text to decide what it's going to
+    // become — this is the whole "type # for a heading, / for a fraction"
+    // trigger mechanism. Runs on every keystroke until the line commits to
+    // a type, at which point this listener's `line.type !== "pending"`
+    // check above makes it a no-op forever after.
+    function wirePendingInput(line) {
+      line.el.addEventListener("input", function () {
+        if (line.type !== "pending") return;
+        var text = line.el.textContent;
+        if (text === "[") {
+          line.el.textContent = "";
+          convertToMatrix(line);
+          return;
+        }
+        // "#", "##", or "###" alone might still be building up to "# ",
+        // "## ", or "### " (a heading marker), so wait for more input
+        // rather than treating a bare "#" as the start of a math
+        // expression.
+        if (/^#{1,3}$/.test(text)) return;
+        // The character class in this pattern (rather than a literal
+        // space) matches both a normal space and " ", because a
+        // contenteditable div sometimes substitutes a non-breaking space
+        // for a trailing regular one — without this, "# " wouldn't
+        // reliably match and the line would fall through to becoming a
+        // math line instead.
+        var headingMatch = text.match(/^(#{1,3})[  ]$/);
+        if (headingMatch) {
+          convertToHeading(line, headingMatch[1].length);
+          return;
+        }
+        // Anything else means this line is math: hand the typed-so-far
+        // text to convertToMath(), which replays it through insertChar()
+        // so e.g. a lone "/" still opens a fraction immediately.
+        line.el.textContent = "";
+        convertToMath(line, text);
+      });
+    }
+
+    // Creates one new, undecided ("pending") line, appends it to the
+    // notebook (both the DOM and the `lines` array), and wires up its
+    // keydown/input handling. The line stays pending until
+    // wirePendingInput's listener above converts it to something else.
+    function createPendingLine() {
+      var el = document.createElement("div");
+      el.className = "line pending";
+      el.contentEditable = "true";
+      el.spellcheck = false;
+      notebook.appendChild(el);
+      var line = { el: el, type: "pending", mathField: null };
+      lines.push(line);
+      wireLineKeydown(line);
+      wirePendingInput(line);
+      return line;
+    }
+
+    // One global capture-phase listener handles every "this key means
+    // something special" case in the app: Ctrl+S/Ctrl+Q (routed to Qt),
+    // and, depending on what's focused, either matrix-cell keys ("," ";"
+    // Tab arrows) or math-line keys (":" "\" "|" "="). Capture phase means
+    // it sees the keystroke before MathQuill's own per-field handling
+    // does, which is what lets it override MathQuill's defaults for keys
+    // like ":" and "\" instead of just supplementing them.
+    document.addEventListener("keydown", function (e) {
+      var mod = e.ctrlKey || e.metaKey;
+      if (mod && !e.shiftKey && !e.altKey) {
+        if (e.key === "s" || e.key === "S") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          window.location.href = "livesheet:export";
+          return;
+        }
+        if (e.key === "q" || e.key === "Q") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          window.location.href = "livesheet:quit";
+          return;
+        }
+      }
+      // Nothing below this point wants to intercept a Ctrl/Cmd combo
+      // (copy, paste, select-all, ...), so let those all through as-is.
+      if (mod) return;
+
+      // --- Matrix-cell keys -------------------------------------------
+      var cellEl = e.target.closest ? e.target.closest(".matrix-cell") : null;
+      if (cellEl && cellEl._line) {
+        var mLine = cellEl._line, r = cellEl._row, c = cellEl._col;
+        if (e.key === ",") {
+          // Adds a new column to the current row and moves into it.
+          e.preventDefault(); e.stopImmediatePropagation();
+          addCellToRow(mLine, r).focus();
+          return;
+        }
+        if (e.key === ";") {
+          // Starts a new row (with one empty cell) and moves into it.
+          e.preventDefault(); e.stopImmediatePropagation();
+          addCellToRow(mLine, addRow(mLine)).focus();
+          return;
+        }
+        if (e.key === "Tab") {
+          // Tab/Shift+Tab walk the cells in reading order (left to right,
+          // then down a row), stepping out to the notebook line before/
+          // after the matrix once there's no next/previous cell left.
+          e.preventDefault(); e.stopImmediatePropagation();
+          if (!e.shiftKey) {
+            if (c < mLine.rows[r].length - 1) focusCell(mLine, r, c + 1);
+            else if (r < mLine.rows.length - 1) focusCell(mLine, r + 1, 0);
+            else exitMatrixForward(mLine);
+          } else {
+            if (c > 0) focusCell(mLine, r, c - 1);
+            else if (r > 0) focusCell(mLine, r - 1, mLine.rows[r - 1].length - 1);
+            else exitMatrixBackward(mLine);
+          }
+          return;
+        }
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          // Always moves a row (rather than letting MathQuill navigate a
+          // fraction's blocks vertically within the cell); matrix row
+          // navigation takes priority here. At the top/bottom row, it
+          // steps out to the adjacent notebook line.
+          e.preventDefault(); e.stopImmediatePropagation();
+          var down = e.key === "ArrowDown";
+          var targetRow = r + (down ? 1 : -1);
+          if (mLine.rows[targetRow]) {
+            focusCell(mLine, targetRow, Math.min(c, mLine.rows[targetRow].length - 1));
+          } else if (down) {
+            exitMatrixForward(mLine);
+          } else {
+            exitMatrixBackward(mLine);
+          }
+          return;
+        }
+        return;
+      }
+
+      var hostLineEl = e.target.closest ? e.target.closest(".math-line") : null;
+      var hostLine = hostLineEl && hostLineEl._line;
+      if (!hostLine) return;
+
+      // These keys have their own meaning to MathQuill (":" and "=" are
+      // unbound, "\" opens its LaTeX-command-name entry mode) that we
+      // override here, via the same insertChar() used for buffered replay.
+      if (e.key === ":" || e.key === "\\" || e.key === "|" || e.key === "=") {
+        e.preventDefault(); e.stopImmediatePropagation();
+        insertChar(hostLine, e.key);
+      }
+    }, true);
+
+    // The page starts life as a single empty pending line, focused and
+    // ready to type into.
+    focusLine(createPendingLine());
+
+    // Called from Qt (Main.qml's export dialog, via
+    // runJavaScript("JSON.stringify(collectDocument())")) to gather the
+    // whole document for export: an ordered list of {type, content}
+    // objects, one per line, with content already turned into LaTeX for
+    // both math and matrix lines (Backend::blocksToLatex on the C++ side
+    // only has to know about a generic "math" block, not matrices
+    // specifically). A matrix line's own "matrix" type is a notebook.html
+    // concept only — Qt only ever sees it already flattened to LaTeX.
+    function collectDocument() {
+      return lines.map(function (line) {
+        if (line.type === "math") return { type: "math", content: line.mathField.latex() };
+        if (line.type === "matrix") return { type: "math", content: matrixLatex(line) };
+        if (line.type === "heading-1") return { type: "title", content: line.el.textContent };
+        if (line.type === "heading-2") return { type: "paragraph", content: line.el.textContent };
+        if (line.type === "heading-3") return { type: "subparagraph", content: line.el.textContent };
+        return { type: "text", content: line.el.textContent };
+      });
+    }
+  </script>
+</body>
+</html>

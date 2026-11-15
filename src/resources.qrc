@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="Main.qml">Main.qml</file>
+        <file alias="notebook.html">notebook.html</file>
+        <file alias="jquery/jquery.min.js">jquery/jquery.min.js</file>
+        <file alias="mathquill/mathquill.min.js">mathquill/mathquill.min.js</file>
+        <file alias="mathquill/mathquill.css">mathquill/mathquill.css</file>
+        <file alias="mathquill/font/Symbola.woff2">mathquill/font/Symbola.woff2</file>
+        <file alias="mathquill/font/Symbola.woff">mathquill/font/Symbola.woff</file>
+    </qresource>
+</RCC>

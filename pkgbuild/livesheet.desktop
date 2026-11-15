@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=livesheet
+Comment=A keyboard-only math notebook with live, textbook-style rendering
+Exec=livesheet %f
+Icon=livesheet
+Terminal=false
+Categories=Utility;Office;
+StartupWMClass=livesheet
