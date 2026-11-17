@@ -212,23 +212,48 @@
       placeCaretAtEnd(line.el);
     }
 
+    // A Mathcad-style range variable (collected by collectDefinitions()
+    // below) is stored in `vars` as a plain JS array rather than a number.
+    // broadcast()/broadcastUnary() are what let every operator below work
+    // on one unchanged whether its operand is a scalar or a range: if
+    // either side is an array, the operator is applied element-wise
+    // (ranges must be the same length if both sides are one) instead of
+    // once — this is the actual "evaluate once per range value" behavior
+    // that makes a range variable useful, applied uniformly rather than
+    // needing special-casing at every call site below.
+    function broadcast(a, b, op) {
+      if (Array.isArray(a) && Array.isArray(b)) {
+        if (a.length !== b.length) throw new Error("range length mismatch");
+        return a.map(function (av, i) { return op(av, b[i]); });
+      }
+      if (Array.isArray(a)) return a.map(function (av) { return op(av, b); });
+      if (Array.isArray(b)) return b.map(function (bv) { return op(a, bv); });
+      return op(a, b);
+    }
+    function broadcastUnary(a, op) {
+      return Array.isArray(a) ? a.map(op) : op(a);
+    }
+
     // A tiny LaTeX evaluator: just enough of the grammar MathQuill produces
     // (numbers, single-letter variables, +-, implicit/explicit *, /, \frac,
-    // \sqrt, \sqrt[n]{}, ^, parens, single-letter function calls) to turn
-    // what's on a line into a number. It's a standard recursive-descent
-    // parser, structured by operator precedence from loosest to tightest
-    // binding: parseExpr (+ -) calls parseTerm (* /, including two letters
-    // next to each other meaning multiply) calls parsePow (^) calls
-    // parseUnary (leading - or +) calls parseAtom (numbers, variables,
-    // \sqrt, \frac, parens, function calls — the actual "things" the
-    // operators above combine). Throws on anything it can't parse or on an
-    // undefined variable; callers are expected to catch that and treat it
-    // as "can't evaluate yet" rather than a hard error.
+    // \sqrt, \sqrt[n]{}, ^, parens, single-letter function calls, and
+    // range-variable broadcasting via the above) to turn what's on a line
+    // into a number (or, if a range variable is involved, an array of
+    // them). It's a standard recursive-descent parser, structured by
+    // operator precedence from loosest to tightest binding: parseExpr
+    // (+ -) calls parseTerm (* /, including two letters next to each other
+    // meaning multiply) calls parsePow (^) calls parseUnary (leading - or
+    // +) calls parseAtom (numbers, variables, \sqrt, \frac, parens,
+    // function calls — the actual "things" the operators above combine).
+    // Throws on anything it can't parse or on an undefined variable;
+    // callers are expected to catch that and treat it as "can't evaluate
+    // yet" rather than a hard error.
     // `funcs` maps a single-letter function name to {param, body}, as
     // collected by collectDefinitions() below; a function call evaluates
     // its body (itself a nested evaluateLatex() call, so a function can use
     // \sqrt/\frac/further calls in its own definition) with `param` bound
-    // to the call's argument and every other variable carried over unchanged.
+    // to the call's argument and every other variable carried over
+    // unchanged. The argument can itself be a range, same as any operator.
     function evaluateLatex(latex, vars, funcs) {
       // `src`/`pos` are this call's cursor into the LaTeX string; evalSub()
       // below temporarily repoints them at a nested group's text (a \frac's
@@ -301,8 +326,8 @@
       function parseExpr() {
         var v = parseTerm();
         for (;;) {
-          if (eat("+")) v += parseTerm();
-          else if (eat("-")) v -= parseTerm();
+          if (eat("+")) v = broadcast(v, parseTerm(), function (x, y) { return x + y; });
+          else if (eat("-")) v = broadcast(v, parseTerm(), function (x, y) { return x - y; });
           else break;
         }
         return v;
@@ -320,14 +345,14 @@
       function parseTerm() {
         var v = parsePow();
         for (;;) {
-          if (eat("\\cdot") || eat("\\times") || eat("*")) v *= parsePow();
-          else if (eat("\\div")) v /= parsePow();
+          if (eat("\\cdot") || eat("\\times") || eat("*")) v = broadcast(v, parsePow(), function (x, y) { return x * y; });
+          else if (eat("\\div")) v = broadcast(v, parsePow(), function (x, y) { return x / y; });
           else {
             skipWs();
             var c = peek();
             var atomAhead = (c && /[0-9a-zA-Z(]/.test(c)) ||
               src.startsWith("\\sqrt", pos) || src.startsWith("\\frac", pos) || src.startsWith("\\left(", pos);
-            if (atomAhead) v *= parsePow();
+            if (atomAhead) v = broadcast(v, parsePow(), function (x, y) { return x * y; });
             else break;
           }
         }
@@ -340,13 +365,13 @@
         if (eat("^")) {
           skipWs();
           var exp = peek() === "{" ? evalSub(parseGroup()) : parseUnary();
-          v = Math.pow(v, exp);
+          v = broadcast(v, exp, function (b, e) { return Math.pow(b, e); });
         }
         return v;
       }
       // A leading run of unary - or + signs in front of an atom.
       function parseUnary() {
-        if (eat("-")) return -parseUnary();
+        if (eat("-")) return broadcastUnary(parseUnary(), function (x) { return -x; });
         if (eat("+")) return parseUnary();
         return parseAtom();
       }
@@ -363,12 +388,16 @@
         if (eat("\\sqrt")) {
           var idx = parseBracketGroup();
           var radicand = evalSub(parseGroup());
-          return idx !== null ? Math.pow(radicand, 1 / evalSub(idx)) : Math.sqrt(radicand);
+          if (idx !== null) {
+            var n = evalSub(idx);
+            return broadcast(radicand, n, function (r, nn) { return Math.pow(r, 1 / nn); });
+          }
+          return broadcastUnary(radicand, Math.sqrt);
         }
         if (eat("\\frac")) {
           var num = evalSub(parseGroup());
           var den = evalSub(parseGroup());
-          return num / den;
+          return broadcast(num, den, function (x, y) { return x / y; });
         }
         if (eat("\\left(")) {
           var v = parseExpr();
@@ -417,16 +446,58 @@
       return result;
     }
 
+    // A Mathcad-style range variable's definition — "start…end" (step 1)
+    // or "start,second…end" (step = second - start, so "0,2…10" is
+    // 0,2,4,...,10) — typed with ";" for the "…" the same way Mathcad
+    // itself uses the semicolon key for its range operator (see
+    // insertChar()). Returns null when `rhs` has no top-level "\ldots" at
+    // all, so collectDefinitions() below can fall through to evaluating it
+    // as an ordinary scalar/expression instead.
+    // Capped at MAX_RANGE_LENGTH: nothing else stops a typo like
+    // "i:=0;1000000" from building (and then typing out, one character at
+    // a time) a many-million-entry array.
+    var MAX_RANGE_LENGTH = 1000;
+    var RANGE_MARKER = "\\ldots";
+    function parseRangeDefinition(rhs, vars, funcs) {
+      var dotsAt = rhs.indexOf(RANGE_MARKER);
+      if (dotsAt === -1) return null;
+      var before = rhs.slice(0, dotsAt), afterLatex = rhs.slice(dotsAt + RANGE_MARKER.length);
+      var startLatex = before, secondLatex = null;
+      var commaAt = before.indexOf(",");
+      if (commaAt !== -1) {
+        startLatex = before.slice(0, commaAt);
+        secondLatex = before.slice(commaAt + 1);
+      }
+      var start = evaluateLatex(startLatex, vars, funcs);
+      var end = evaluateLatex(afterLatex, vars, funcs);
+      var step = secondLatex !== null ? evaluateLatex(secondLatex, vars, funcs) - start : (end >= start ? 1 : -1);
+      if (!step || !isFinite(step)) throw new Error("invalid range step");
+      var values = [];
+      if (step > 0) {
+        for (var v = start; v <= end + 1e-9; v += step) {
+          if (values.push(v) > MAX_RANGE_LENGTH) throw new Error("range too long");
+        }
+      } else {
+        for (var v2 = start; v2 >= end - 1e-9; v2 += step) {
+          if (values.push(v2) > MAX_RANGE_LENGTH) throw new Error("range too long");
+        }
+      }
+      return values;
+    }
+
     // Builds {letter: value} and {letter: {param, body}} from every earlier
-    // "x:=expr" and "f(x):=expr" line (respectively), in document order, so
-    // a later line can reference anything defined above it. Each variable
-    // definition is evaluated using the variables/functions collected so
-    // far, so "b:=a+1" after "a:=2" works, and so does "b:=f(2)" after
-    // "f(x):=x+1"; a definition that fails to evaluate (bad syntax, or
-    // referencing something not yet defined) is just skipped, leaving that
-    // letter undefined for anything below it. A function's own body isn't
-    // evaluated here — it can't be, without an argument — just stored for
-    // evaluateLatex()'s parseAtom to evaluate lazily on each call.
+    // "x:=expr", "f(x):=expr", and "i:=start..end" line (respectively), in
+    // document order, so a later line can reference anything defined above
+    // it. Each definition is evaluated using the variables/functions
+    // collected so far, so "b:=a+1" after "a:=2" works, and so does
+    // "b:=f(2)" after "f(x):=x+1"; a definition that fails to evaluate (bad
+    // syntax, or referencing something not yet defined) is just skipped,
+    // leaving that letter undefined for anything below it. A function's own
+    // body isn't evaluated here — it can't be, without an argument — just
+    // stored for evaluateLatex()'s parseAtom to evaluate lazily on each
+    // call. A range variable's array, unlike a function's body, IS fully
+    // evaluated here (parseRangeDefinition() needs concrete start/end/step
+    // numbers to build it), the same as a plain scalar definition.
     function collectDefinitions(line) {
       var vars = {}, funcs = {};
       var stop = indexOf(line);
@@ -438,15 +509,23 @@
         if (fm) { funcs[fm[1]] = { param: fm[2], body: fm[3] }; continue; }
         var m = /^([a-zA-Z]):=(.+)$/.exec(latex);
         if (!m) continue;
-        try { vars[m[1]] = evaluateLatex(m[2], vars, funcs); } catch (e) { /* skip bad/circular defs */ }
+        try {
+          var range = parseRangeDefinition(m[2], vars, funcs);
+          vars[m[1]] = range !== null ? range : evaluateLatex(m[2], vars, funcs);
+        } catch (e) { /* skip bad/circular defs */ }
       }
       return { vars: vars, funcs: funcs };
     }
 
     // Turns an evaluation result into the text to type after "=": a whole
     // number prints as itself (dropping floating-point noise like
-    // 2.9999999996), anything else is rounded to 6 decimal places.
+    // 2.9999999996), anything else is rounded to 6 decimal places. A range
+    // variable (or a formula that used one) evaluates to an array instead
+    // of a single number — formatted as a comma-separated list of the same
+    // per-value formatting, since this app has no table/vector display of
+    // its own to put each value in.
     function formatNumber(x) {
+      if (Array.isArray(x)) return x.map(formatNumber).join(", ");
       if (!isFinite(x)) throw new Error("not finite");
       if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
       return String(Math.round(x * 1e6) / 1e6);
@@ -472,6 +551,13 @@
     function insertChar(line, ch) {
       var mathField = line.mathField;
       if (ch === ":") mathField.typedText(":=");
+      // Mathcad's own shortcut for its range operator: typing ";" inserts
+      // the range marker, as in "i:=0;10" rendering as "i := 0…10" (see
+      // parseRangeDefinition()). This uses \ldots (a single atomic symbol)
+      // rather than typing ".." literally — MathQuill treats two typed "."
+      // right after a digit as "just one decimal point, thanks" and drops
+      // the second one, which would silently break "0..10" into "0.10".
+      else if (ch === ";") mathField.cmd("\\ldots");
       else if (ch === "\\") mathField.cmd("\\sqrt");
       else if (ch === "|") mathField.cmd("\\nthroot");
       else if (ch === "=") {
@@ -857,9 +943,10 @@
       if (!hostLine) return;
 
       // These keys have their own meaning to MathQuill (":" and "=" are
-      // unbound, "\" opens its LaTeX-command-name entry mode) that we
-      // override here, via the same insertChar() used for buffered replay.
-      if (e.key === ":" || e.key === "\\" || e.key === "|" || e.key === "=") {
+      // unbound, "\" opens its LaTeX-command-name entry mode, ";" would
+      // otherwise just type a literal semicolon) that we override here,
+      // via the same insertChar() used for buffered replay.
+      if (e.key === ":" || e.key === ";" || e.key === "\\" || e.key === "|" || e.key === "=") {
         e.preventDefault(); e.stopImmediatePropagation();
         insertChar(hostLine, e.key);
       }

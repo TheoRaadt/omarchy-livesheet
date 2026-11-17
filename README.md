@@ -23,6 +23,13 @@ Inside a math field:
   letter, e.g. `f(x):x^2+4` renders as `f(x) := x^2 + 4`. Call it later
   with a number or expression in place of `x`, e.g. `f(4)` followed by
   `=` gives `= 20`
+- `;` (Mathcad's own shortcut for its range operator) defines a **range
+  variable** when used in place of `:=`'s value, e.g. `i:0;5` renders as
+  `i := 0…5` — the integers 0 through 5. `i:0,2;10` renders as
+  `i := 0,2…10` for a step of 2 (0, 2, 4, ..., 10) instead of 1. Any
+  formula that uses a range variable evaluates once per value in the
+  range, the same as Mathcad: with `i := 0…5` defined, `i^2` followed by
+  `=` gives `= 0, 1, 4, 9, 16, 25` rather than a single number
 - `/` opens a fraction: two empty, stacked placeholders (numerator and
   denominator) that you fill in with numbers or variables, moving between
   them with **Tab** / **Shift+Tab**

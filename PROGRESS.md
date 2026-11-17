@@ -73,11 +73,36 @@ below was verified by building (`bin/build`), running the backend tests
     `20`; a function body referencing an earlier variable; a variable
     definition calling an earlier function; plain `2(3+4)` → `14`; an
     undefined `c(4)` still throws rather than silently returning 0.
-  - Not yet re-verified live in the running app after the fix — driving
-    MathQuill via synthetic Wayland key injection (`wtype`) in this
-    environment proved too flaky (focus steals, dropped/misordered
-    keystrokes) to trust as a check; the Node-level verification above
-    exercises the actual evaluator code, just outside the browser.
+  - Re-verified live in the running app once the GUI-driving flakiness
+    settled (see the range-variable entry below for the same caveat):
+    `f(x):=x^2+4` then `f(4)=` rendered `= 20`.
+- **Range variables (Mathcad-style, `;` for the range operator)** —
+  `i:0;5` renders as `i := 0…5` (the integers 0 through 5); `i:0,2;10`
+  renders as `i := 0,2…10` for an explicit step of 2. Any formula that
+  references a range variable evaluates once per value in the range, the
+  same as real Mathcad, rather than as a single number.
+  - `src/notebook.html`: every arithmetic operator (`+ - * / ^ \sqrt
+    \frac`, plus function calls) now goes through `broadcast()`/
+    `broadcastUnary()`, which apply element-wise whenever either operand
+    is an array instead of a number; `parseRangeDefinition()` builds that
+    array from a `start…end`/`start,second…end` definition (capped at
+    1000 entries so a typo like `i:0;1000000` can't hang the page); the
+    marker itself is MathQuill's `\ldots` command (inserted via `.cmd()`
+    on `;`), not two typed literal dots — MathQuill treats two typed `.`
+    right after a digit as "still one decimal point" and silently drops
+    the second one, which would have turned `0..5` into `0.5`.
+  - Verified with the same kind of standalone Node script as the function
+    feature above: `i:=0…5` is the array `[0,1,2,3,4,5]`; `i^2` over it
+    gives `0, 1, 4, 9, 16, 25`; explicit step (`0,2…10`), descending
+    ranges (`5…0`), a range broadcast against a plain scalar, a range
+    passed as a function argument, and `\sqrt`/`\frac` broadcasting all
+    checked; mismatched-length range arithmetic throws rather than
+    silently misaligning; an absurdly long range is rejected.
+  - Also re-verified live in the running app (after working around the
+    GUI-driving flakiness noted above by giving the page a moment to
+    repaint before screenshotting — the input itself wasn't the problem,
+    the screenshot was just taken before the browser finished redrawing):
+    `i:0;5` then `i^2=` rendered `i := 0…5` and `i^2 = 0, 1, 4, 9, 16, 25`.
 
 ## Not done / out of scope (per README's own "Notes" section)
 
