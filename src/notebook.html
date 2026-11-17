@@ -214,16 +214,22 @@
 
     // A tiny LaTeX evaluator: just enough of the grammar MathQuill produces
     // (numbers, single-letter variables, +-, implicit/explicit *, /, \frac,
-    // \sqrt, \sqrt[n]{}, ^, parens) to turn what's on a line into a number.
-    // It's a standard recursive-descent parser, structured by operator
-    // precedence from loosest to tightest binding: parseExpr (+ -) calls
-    // parseTerm (* /, including two letters next to each other meaning
-    // multiply) calls parsePow (^) calls parseUnary (leading - or +) calls
-    // parseAtom (numbers, variables, \sqrt, \frac, parens — the actual
-    // "things" the operators above combine). Throws on anything it can't
-    // parse or on an undefined variable; callers are expected to catch that
-    // and treat it as "can't evaluate yet" rather than a hard error.
-    function evaluateLatex(latex, vars) {
+    // \sqrt, \sqrt[n]{}, ^, parens, single-letter function calls) to turn
+    // what's on a line into a number. It's a standard recursive-descent
+    // parser, structured by operator precedence from loosest to tightest
+    // binding: parseExpr (+ -) calls parseTerm (* /, including two letters
+    // next to each other meaning multiply) calls parsePow (^) calls
+    // parseUnary (leading - or +) calls parseAtom (numbers, variables,
+    // \sqrt, \frac, parens, function calls — the actual "things" the
+    // operators above combine). Throws on anything it can't parse or on an
+    // undefined variable; callers are expected to catch that and treat it
+    // as "can't evaluate yet" rather than a hard error.
+    // `funcs` maps a single-letter function name to {param, body}, as
+    // collected by collectDefinitions() below; a function call evaluates
+    // its body (itself a nested evaluateLatex() call, so a function can use
+    // \sqrt/\frac/further calls in its own definition) with `param` bound
+    // to the call's argument and every other variable carried over unchanged.
+    function evaluateLatex(latex, vars, funcs) {
       // `src`/`pos` are this call's cursor into the LaTeX string; evalSub()
       // below temporarily repoints them at a nested group's text (a \frac's
       // numerator, a \sqrt's radicand, ...) and restores them afterward, so
@@ -303,9 +309,14 @@
       }
       // Multiplication and division, including MathQuill's \cdot/\times
       // and a bare "*", plus implicit multiplication: if the next thing
-      // looks like the start of another atom (a digit, letter, backslash
-      // command, or open paren) with no operator in between, that's
-      // "2x" or "xy" style juxtaposition, so multiply by it anyway.
+      // looks like the start of another atom (a digit, letter, open paren,
+      // or one of the backslash commands parseAtom actually understands)
+      // with no operator in between, that's "2x" or "xy" style
+      // juxtaposition, so multiply by it anyway. This deliberately doesn't
+      // match every backslash — just \sqrt/\frac/\left(, the ones parseAtom
+      // can start an atom with — so it doesn't mistake a \right) (or any
+      // other command) that's closing an *enclosing* group for the start
+      // of a new factor.
       function parseTerm() {
         var v = parsePow();
         for (;;) {
@@ -314,7 +325,9 @@
           else {
             skipWs();
             var c = peek();
-            if (c && /[0-9a-zA-Z\\(]/.test(c)) v *= parsePow();
+            var atomAhead = (c && /[0-9a-zA-Z(]/.test(c)) ||
+              src.startsWith("\\sqrt", pos) || src.startsWith("\\frac", pos) || src.startsWith("\\left(", pos);
+            if (atomAhead) v *= parsePow();
             else break;
           }
         }
@@ -339,8 +352,12 @@
       }
       // The tightest-binding level: the actual values and function-like
       // forms everything above combines — a number, a single-letter
-      // variable (looked up in `vars`), a \sqrt (with an optional [n] for
-      // an nth root), a \frac, or a parenthesized sub-expression.
+      // variable (looked up in `vars`) or function call (looked up in
+      // `funcs`), a \sqrt (with an optional [n] for an nth root), a \frac,
+      // or a parenthesized sub-expression. Typed parens come through as
+      // MathQuill's auto-matched \left( \right) pair, not bare ( ), so
+      // both forms are accepted here (and by the function-call parens
+      // just below).
       function parseAtom() {
         skipWs();
         if (eat("\\sqrt")) {
@@ -353,6 +370,11 @@
           var den = evalSub(parseGroup());
           return num / den;
         }
+        if (eat("\\left(")) {
+          var v = parseExpr();
+          eat("\\right)");
+          return v;
+        }
         if (eat("(")) {
           var v = parseExpr();
           eat(")");
@@ -363,6 +385,23 @@
         var c = peek();
         if (c && /[a-zA-Z]/.test(c)) {
           pos++;
+          // A letter immediately followed by an opening paren is a
+          // function call only if it's a known function name — otherwise
+          // (e.g. "2x(3+1)") it falls through to the plain-variable case
+          // below and the parens are left for parseTerm's implicit
+          // multiplication to pick up, same as any other juxtaposition.
+          if (funcs && (c in funcs)) {
+            var usesLeft = eat("\\left(");
+            if (usesLeft || eat("(")) {
+              var argValue = parseExpr();
+              if (usesLeft) eat("\\right)"); else eat(")");
+              var fn = funcs[c];
+              var callVars = {};
+              for (var k in vars) callVars[k] = vars[k];
+              callVars[fn.param] = argValue;
+              return evaluateLatex(fn.body, callVars, funcs);
+            }
+          }
           if (!(c in vars)) throw new Error("undefined variable " + c);
           return vars[c];
         }
@@ -378,23 +417,30 @@
       return result;
     }
 
-    // Builds {letter: value} from every earlier "x:=expr" line, in document
-    // order, so a later line can reference anything defined above it. Each
-    // definition is evaluated using the variables collected so far, so
-    // "b:=a+1" after "a:=2" works; a definition that fails to evaluate (bad
-    // syntax, or referencing something not yet defined) is just skipped,
-    // leaving that letter undefined for anything below it.
-    function collectVariables(line) {
-      var vars = {};
+    // Builds {letter: value} and {letter: {param, body}} from every earlier
+    // "x:=expr" and "f(x):=expr" line (respectively), in document order, so
+    // a later line can reference anything defined above it. Each variable
+    // definition is evaluated using the variables/functions collected so
+    // far, so "b:=a+1" after "a:=2" works, and so does "b:=f(2)" after
+    // "f(x):=x+1"; a definition that fails to evaluate (bad syntax, or
+    // referencing something not yet defined) is just skipped, leaving that
+    // letter undefined for anything below it. A function's own body isn't
+    // evaluated here — it can't be, without an argument — just stored for
+    // evaluateLatex()'s parseAtom to evaluate lazily on each call.
+    function collectDefinitions(line) {
+      var vars = {}, funcs = {};
       var stop = indexOf(line);
       for (var k = 0; k < stop; k++) {
         var l = lines[k];
         if (l.type !== "math") continue;
-        var m = /^([a-zA-Z]):=(.+)$/.exec(l.mathField.latex());
+        var latex = l.mathField.latex();
+        var fm = /^([a-zA-Z])\\left\(([a-zA-Z])\\right\):=(.+)$/.exec(latex);
+        if (fm) { funcs[fm[1]] = { param: fm[2], body: fm[3] }; continue; }
+        var m = /^([a-zA-Z]):=(.+)$/.exec(latex);
         if (!m) continue;
-        try { vars[m[1]] = evaluateLatex(m[2], vars); } catch (e) { /* skip bad/circular defs */ }
+        try { vars[m[1]] = evaluateLatex(m[2], vars, funcs); } catch (e) { /* skip bad/circular defs */ }
       }
-      return vars;
+      return { vars: vars, funcs: funcs };
     }
 
     // Turns an evaluation result into the text to type after "=": a whole
@@ -412,8 +458,8 @@
     // references a variable that hasn't been defined above).
     function evaluateAndAppend(line, exprLatex) {
       try {
-        var vars = collectVariables(line);
-        var result = evaluateLatex(exprLatex, vars);
+        var defs = collectDefinitions(line);
+        var result = evaluateLatex(exprLatex, defs.vars, defs.funcs);
         line.mathField.typedText(formatNumber(result));
       } catch (e) { /* leave just the "=" */ }
     }

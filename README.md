@@ -19,6 +19,10 @@ Inside a math field:
 - Numbers, letters, and operators render as proper math as you type
   (MathQuill)
 - `:` becomes `:=` — for defining a variable, e.g. `a:2` renders as `a := 2`
+- The same shortcut also defines a single-letter **function** of a single
+  letter, e.g. `f(x):x^2+4` renders as `f(x) := x^2 + 4`. Call it later
+  with a number or expression in place of `x`, e.g. `f(4)` followed by
+  `=` gives `= 20`
 - `/` opens a fraction: two empty, stacked placeholders (numerator and
   denominator) that you fill in with numbers or variables, moving between
   them with **Tab** / **Shift+Tab**

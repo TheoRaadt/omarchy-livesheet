@@ -51,6 +51,33 @@ below was verified by building (`bin/build`), running the backend tests
   no `colors.toml` is present. Covered by a passing unit test.
 - **Build/test/install scripts** — `bin/build` (qmake6 + make),
   `bin/test` (offscreen QtTest run), `bin/install` (`makepkg -fsi`).
+- **Functions as variables (`f(x):=...`, `f(4)=`)** — a single-letter name
+  followed by a single-letter parameter in parens, e.g. `f(x):=x^2+4`,
+  defines a function the same way `a:3` defines a variable. Calling it
+  later, e.g. `f(4)=`, substitutes the argument for the parameter and
+  evaluates the body, including referencing variables/other functions
+  defined above it (`src/notebook.html`: `collectDefinitions()` now
+  returns `{vars, funcs}` instead of just variables; `evaluateLatex()`'s
+  `parseAtom` recognizes a known function name followed by `(`/`\left(` as
+  a call rather than implicit multiplication).
+  - Fixed as part of this: typed parens were previously unparseable at
+    all — MathQuill emits `\left(`/`\right)` for a typed `(`/`)`, not bare
+    `(`/`)`, so `parseAtom` now accepts both forms, and the implicit-
+    multiplication lookahead in `parseTerm` (which used to treat *any*
+    backslash as "start of another factor") was narrowed to only
+    `\sqrt`/`\frac`/`\left(` so it stops misfiring on a `\right)` that's
+    closing an enclosing group.
+  - Verified with a standalone Node script running `evaluateLatex`/
+    `collectDefinitions` copied verbatim from the file (no DOM/MathQuill
+    needed for the pure evaluator logic): `f(x):=x^2+4` then `f(4)` →
+    `20`; a function body referencing an earlier variable; a variable
+    definition calling an earlier function; plain `2(3+4)` → `14`; an
+    undefined `c(4)` still throws rather than silently returning 0.
+  - Not yet re-verified live in the running app after the fix — driving
+    MathQuill via synthetic Wayland key injection (`wtype`) in this
+    environment proved too flaky (focus steals, dropped/misordered
+    keystrokes) to trust as a check; the Node-level verification above
+    exercises the actual evaluator code, just outside the browser.
 
 ## Not done / out of scope (per README's own "Notes" section)
 
