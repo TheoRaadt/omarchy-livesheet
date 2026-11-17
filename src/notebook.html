@@ -233,11 +233,25 @@
     function broadcastUnary(a, op) {
       return Array.isArray(a) ? a.map(op) : op(a);
     }
+    // Mathcad's Σ/Π operators (bare "$"/"#", summing/multiplying an
+    // expression over whatever range variable it contains) are the mirror
+    // image of broadcast(): where broadcast() turns a scalar operator into
+    // one that runs once per range value, this turns the resulting array
+    // back into a single number by folding it with + or *. A body that
+    // didn't reference a range variable at all (so it's already a plain
+    // number, not an array) just passes through unchanged — "the sum of a
+    // single value" is that value, same as Mathcad.
+    function reduceOverRange(value, combine) {
+      if (!Array.isArray(value)) return value;
+      if (value.length === 0) throw new Error("empty range");
+      return value.reduce(combine);
+    }
 
     // A tiny LaTeX evaluator: just enough of the grammar MathQuill produces
     // (numbers, single-letter variables, +-, implicit/explicit *, /, \frac,
-    // \sqrt, \sqrt[n]{}, ^, parens, single-letter function calls, and
-    // range-variable broadcasting via the above) to turn what's on a line
+    // \sqrt, \sqrt[n]{}, ^, parens, function calls (one or more
+    // single-letter parameters), and range-variable broadcasting via the
+    // above) to turn what's on a line
     // into a number (or, if a range variable is involved, an array of
     // them). It's a standard recursive-descent parser, structured by
     // operator precedence from loosest to tightest binding: parseExpr
@@ -248,12 +262,13 @@
     // Throws on anything it can't parse or on an undefined variable;
     // callers are expected to catch that and treat it as "can't evaluate
     // yet" rather than a hard error.
-    // `funcs` maps a single-letter function name to {param, body}, as
-    // collected by collectDefinitions() below; a function call evaluates
-    // its body (itself a nested evaluateLatex() call, so a function can use
-    // \sqrt/\frac/further calls in its own definition) with `param` bound
-    // to the call's argument and every other variable carried over
-    // unchanged. The argument can itself be a range, same as any operator.
+    // `funcs` maps a single-letter function name to {params, body} (one or
+    // more single-letter parameters), as collected by collectDefinitions()
+    // below; a function call evaluates its body (itself a nested
+    // evaluateLatex() call, so a function can use \sqrt/\frac/further
+    // calls in its own definition) with each of `params` bound to the
+    // matching argument and every other variable carried over unchanged.
+    // Any argument can itself be a range, same as any operator.
     function evaluateLatex(latex, vars, funcs) {
       // `src`/`pos` are this call's cursor into the LaTeX string; evalSub()
       // below temporarily repoints them at a nested group's text (a \frac's
@@ -385,6 +400,13 @@
       // just below).
       function parseAtom() {
         skipWs();
+        // Σ/Π bind like a tight unary prefix — one parsePow()'s worth of
+        // operand, the same "-x^2 means -(x^2)" precedence unary minus
+        // uses — so "\Sigma i^2" sums i^2, but summing a multi-term body
+        // needs explicit parens ("\Sigma\left(i^2+1\right)") the same way
+        // Mathcad itself requires them for anything past a single term.
+        if (eat("\\Sigma")) return reduceOverRange(parsePow(), function (a, b) { return a + b; });
+        if (eat("\\Pi")) return reduceOverRange(parsePow(), function (a, b) { return a * b; });
         if (eat("\\sqrt")) {
           var idx = parseBracketGroup();
           var radicand = evalSub(parseGroup());
@@ -422,12 +444,19 @@
           if (funcs && (c in funcs)) {
             var usesLeft = eat("\\left(");
             if (usesLeft || eat("(")) {
-              var argValue = parseExpr();
-              if (usesLeft) eat("\\right)"); else eat(")");
               var fn = funcs[c];
+              // One argument per comma, same comma MathQuill already types
+              // literally (no override needed, the same way a matrix's
+              // commas are only special inside a matrix cell).
+              var args = [parseExpr()];
+              while (eat(",")) args.push(parseExpr());
+              if (usesLeft) eat("\\right)"); else eat(")");
+              if (args.length !== fn.params.length) {
+                throw new Error(c + " takes " + fn.params.length + " argument(s), got " + args.length);
+              }
               var callVars = {};
               for (var k in vars) callVars[k] = vars[k];
-              callVars[fn.param] = argValue;
+              for (var pIdx = 0; pIdx < fn.params.length; pIdx++) callVars[fn.params[pIdx]] = args[pIdx];
               return evaluateLatex(fn.body, callVars, funcs);
             }
           }
@@ -485,19 +514,23 @@
       return values;
     }
 
-    // Builds {letter: value} and {letter: {param, body}} from every earlier
-    // "x:=expr", "f(x):=expr", and "i:=start..end" line (respectively), in
-    // document order, so a later line can reference anything defined above
-    // it. Each definition is evaluated using the variables/functions
-    // collected so far, so "b:=a+1" after "a:=2" works, and so does
-    // "b:=f(2)" after "f(x):=x+1"; a definition that fails to evaluate (bad
-    // syntax, or referencing something not yet defined) is just skipped,
-    // leaving that letter undefined for anything below it. A function's own
-    // body isn't evaluated here — it can't be, without an argument — just
-    // stored for evaluateLatex()'s parseAtom to evaluate lazily on each
-    // call. A range variable's array, unlike a function's body, IS fully
-    // evaluated here (parseRangeDefinition() needs concrete start/end/step
-    // numbers to build it), the same as a plain scalar definition.
+    // Builds {letter: value} and {letter: {params, body}} from every
+    // earlier "x:=expr", "f(x):=expr" / "f(x,y,...):=expr", and
+    // "i:=start..end" line (respectively), in document order, so a later
+    // line can reference anything defined above it. Each definition is
+    // evaluated using the variables/functions collected so far, so
+    // "b:=a+1" after "a:=2" works, and so does "b:=f(2)" after
+    // "f(x):=x+1"; a definition that fails to evaluate (bad syntax, or
+    // referencing something not yet defined) is just skipped, leaving that
+    // letter undefined for anything below it. A function's own body isn't
+    // evaluated here — it can't be, without arguments — just stored for
+    // evaluateLatex()'s parseAtom to evaluate lazily on each call (one
+    // param is the single-letter-function case this started as; more than
+    // one, e.g. "f(x,y):=\sqrt{x^2+y^2}", works the same way, just with
+    // more names to bind). A range variable's array, unlike a function's
+    // body, IS fully evaluated here (parseRangeDefinition() needs concrete
+    // start/end/step numbers to build it), the same as a plain scalar
+    // definition.
     function collectDefinitions(line) {
       var vars = {}, funcs = {};
       var stop = indexOf(line);
@@ -505,8 +538,8 @@
         var l = lines[k];
         if (l.type !== "math") continue;
         var latex = l.mathField.latex();
-        var fm = /^([a-zA-Z])\\left\(([a-zA-Z])\\right\):=(.+)$/.exec(latex);
-        if (fm) { funcs[fm[1]] = { param: fm[2], body: fm[3] }; continue; }
+        var fm = /^([a-zA-Z])\\left\(([a-zA-Z](?:,[a-zA-Z])*)\\right\):=(.+)$/.exec(latex);
+        if (fm) { funcs[fm[1]] = { params: fm[2].split(","), body: fm[3] }; continue; }
         var m = /^([a-zA-Z]):=(.+)$/.exec(latex);
         if (!m) continue;
         try {
@@ -558,6 +591,11 @@
       // right after a digit as "just one decimal point, thanks" and drops
       // the second one, which would silently break "0..10" into "0.10".
       else if (ch === ";") mathField.cmd("\\ldots");
+      // Mathcad's own bare (unmodified) shortcuts for the summation/
+      // product operators that work over a range variable — "$" is
+      // Shift+4, "#" is Shift+3 on a US keyboard, same as Mathcad.
+      else if (ch === "$") mathField.cmd("\\Sigma");
+      else if (ch === "#") mathField.cmd("\\Pi");
       else if (ch === "\\") mathField.cmd("\\sqrt");
       else if (ch === "|") mathField.cmd("\\nthroot");
       else if (ch === "=") {
@@ -944,9 +982,10 @@
 
       // These keys have their own meaning to MathQuill (":" and "=" are
       // unbound, "\" opens its LaTeX-command-name entry mode, ";" would
-      // otherwise just type a literal semicolon) that we override here,
-      // via the same insertChar() used for buffered replay.
-      if (e.key === ":" || e.key === ";" || e.key === "\\" || e.key === "|" || e.key === "=") {
+      // otherwise just type a literal semicolon, "$"/"#" would otherwise
+      // just type those literal characters) that we override here, via
+      // the same insertChar() used for buffered replay.
+      if (e.key === ":" || e.key === ";" || e.key === "\\" || e.key === "|" || e.key === "=" || e.key === "$" || e.key === "#") {
         e.preventDefault(); e.stopImmediatePropagation();
         insertChar(hostLine, e.key);
       }

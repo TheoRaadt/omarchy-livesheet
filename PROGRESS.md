@@ -51,15 +51,19 @@ below was verified by building (`bin/build`), running the backend tests
   no `colors.toml` is present. Covered by a passing unit test.
 - **Build/test/install scripts** — `bin/build` (qmake6 + make),
   `bin/test` (offscreen QtTest run), `bin/install` (`makepkg -fsi`).
-- **Functions as variables (`f(x):=...`, `f(4)=`)** — a single-letter name
-  followed by a single-letter parameter in parens, e.g. `f(x):=x^2+4`,
-  defines a function the same way `a:3` defines a variable. Calling it
-  later, e.g. `f(4)=`, substitutes the argument for the parameter and
-  evaluates the body, including referencing variables/other functions
-  defined above it (`src/notebook.html`: `collectDefinitions()` now
-  returns `{vars, funcs}` instead of just variables; `evaluateLatex()`'s
-  `parseAtom` recognizes a known function name followed by `(`/`\left(` as
-  a call rather than implicit multiplication).
+- **Functions as variables (`f(x):=...`, `f(4)=`, now multi-variable too)**
+  — a single-letter name followed by one or more comma-separated
+  single-letter parameters in parens, e.g. `f(x):=x^2+4` or
+  `f(x,y):=\sqrt{x^2+y^2}`, defines a function the same way `a:3` defines
+  a variable. Calling it later, e.g. `f(4)=` or `f(2,3)=`, substitutes
+  each argument for the matching parameter and evaluates the body,
+  including referencing variables/other functions defined above it
+  (`src/notebook.html`: `collectDefinitions()` now returns `{vars, funcs}`
+  instead of just variables, with `funcs[name] = {params, body}`;
+  `evaluateLatex()`'s `parseAtom` recognizes a known function name
+  followed by `(`/`\left(` as a call rather than implicit multiplication,
+  reading one comma-separated argument per parameter). Calling with the
+  wrong number of arguments throws rather than silently misbinding.
   - Fixed as part of this: typed parens were previously unparseable at
     all — MathQuill emits `\left(`/`\right)` for a typed `(`/`)`, not bare
     `(`/`)`, so `parseAtom` now accepts both forms, and the implicit-
@@ -76,6 +80,14 @@ below was verified by building (`bin/build`), running the backend tests
   - Re-verified live in the running app once the GUI-driving flakiness
     settled (see the range-variable entry below for the same caveat):
     `f(x):=x^2+4` then `f(4)=` rendered `= 20`.
+  - Multi-variable upgrade verified with a standalone Node script: a
+    2-param `f(x,y):=\sqrt{x^2+y^2}` called as `f(2,3)` gives `3.605551`
+    (√13); a 3-param function; the original single-param case still works
+    unchanged; calling with the wrong argument count throws; a multi-param
+    function called with a range argument still broadcasts correctly.
+    Also confirmed live by the user, who tried `f(x,y):=\sqrt{x^2+y^2}`
+    then `f(2,3)=` by hand in the running app (before this fix landed, so
+    it rendered but the call itself wasn't evaluable yet).
 - **Range variables (Mathcad-style, `;` for the range operator)** —
   `i:0;5` renders as `i := 0…5` (the integers 0 through 5); `i:0,2;10`
   renders as `i := 0,2…10` for an explicit step of 2. Any formula that
@@ -103,6 +115,30 @@ below was verified by building (`bin/build`), running the backend tests
     repaint before screenshotting — the input itself wasn't the problem,
     the screenshot was just taken before the browser finished redrawing):
     `i:0;5` then `i^2=` rendered `i := 0…5` and `i^2 = 0, 1, 4, 9, 16, 25`.
+- **Sum/product operators (Mathcad-style, `$`/`#` for Σ/Π)** — `$`/`#`
+  (Mathcad's own bare, unmodified shortcuts) insert the plain `\Sigma`/
+  `\Pi` symbol; the expression typed right after is summed/multiplied
+  once per value of whatever range variable it contains, e.g. with
+  `i := 0…5`, `$i^2=` gives `55` and (with `i := 1…4`) `#i=` gives `24`.
+  - `src/notebook.html`: `reduceOverRange()` folds the array a range-
+    broadcasted expression already produces with `+`/`*` — no new
+    broadcasting plumbing needed, since Σ/Π are pure reducers on top of
+    what range variables already built. `parseAtom` treats `\Sigma`/`\Pi`
+    as a tight unary prefix (one `parsePow()`'s worth of operand, the same
+    precedence unary minus uses), so `$i^2` sums `i^2` but summing a
+    multi-term body needs explicit parens (`$\left(i+1\right)`) — without
+    them, `$i+1` parses as `($i)+1`, same restriction Mathcad itself has.
+    A scalar body (no range variable involved) passes through unchanged,
+    so "the sum of one value" is just that value.
+  - Verified with a standalone Node script: `Σi²` over `i:=0..5` → `55`;
+    `Πi` over `i:=1..4` → `24`; `Σ(i+1)` sums the whole parenthesized
+    body; `Σi+1` confirms the tight-binding precedence; a plain scalar
+    body passes through; a sum used inside a larger scalar formula.
+  - Not yet re-verified live: while testing this, the user was
+    independently testing multi-variable function syntax by hand in the
+    same running window my own test keystrokes were going to, so I
+    stopped driving that window to avoid clobbering their input (see the
+    multi-variable function entry above, which came out of exactly that).
 
 ## Not done / out of scope (per README's own "Notes" section)
 

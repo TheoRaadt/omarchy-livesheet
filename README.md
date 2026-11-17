@@ -19,10 +19,12 @@ Inside a math field:
 - Numbers, letters, and operators render as proper math as you type
   (MathQuill)
 - `:` becomes `:=` — for defining a variable, e.g. `a:2` renders as `a := 2`
-- The same shortcut also defines a single-letter **function** of a single
-  letter, e.g. `f(x):x^2+4` renders as `f(x) := x^2 + 4`. Call it later
-  with a number or expression in place of `x`, e.g. `f(4)` followed by
-  `=` gives `= 20`
+- The same shortcut also defines a single-letter **function** of one or
+  more single-letter parameters, e.g. `f(x):x^2+4` renders as
+  `f(x) := x^2 + 4`, or `f(x,y):\sqrt{x^2+y^2}` renders as
+  `f(x,y) := \sqrt{x^2+y^2}`. Call it later with a number or expression
+  per parameter, e.g. `f(4)` followed by `=` gives `= 20`, or
+  `f(2,3)` followed by `=` gives `= 3.605551`
 - `;` (Mathcad's own shortcut for its range operator) defines a **range
   variable** when used in place of `:=`'s value, e.g. `i:0;5` renders as
   `i := 0…5` — the integers 0 through 5. `i:0,2;10` renders as
@@ -30,6 +32,14 @@ Inside a math field:
   formula that uses a range variable evaluates once per value in the
   range, the same as Mathcad: with `i := 0…5` defined, `i^2` followed by
   `=` gives `= 0, 1, 4, 9, 16, 25` rather than a single number
+- `$` and `#` (Mathcad's own bare shortcuts for its summation/product
+  operators) insert **Σ**/**Π**, which sum/multiply the expression typed
+  right after them over whatever range variable it contains, e.g. with
+  `i := 0…5` defined, `$i^2` followed by `=` gives `= 55`
+  (0+1+4+9+16+25) and `#i` (with `i := 1…4`) followed by `=` gives
+  `= 24` (1·2·3·4). Σ/Π bind tightly, like unary minus, to just the next
+  term — summing a multi-term expression needs explicit parens, e.g.
+  `$(i+1)=`
 - `/` opens a fraction: two empty, stacked placeholders (numerator and
   denominator) that you fill in with numbers or variables, moving between
   them with **Tab** / **Shift+Tab**
