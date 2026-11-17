@@ -1,67 +1,84 @@
 # TODO
 
-Running backlog of requested features, tracked by the manager session.
-Update status here as items move; move finished items to `PROGRESS.md`
-instead of leaving them here once they're actually done and verified.
+Running backlog of requested features, tracked by the manager session
+so a new session can pick up immediately without re-reading the whole
+conversation history. Update status here as items move; once something
+is actually done and verified, its details belong in `PROGRESS.md`, not
+here — this file should only ever describe what's *not* done yet, plus
+enough design context that whoever picks an item up next doesn't have
+to re-derive decisions already made.
 
-## In progress
+Last updated: 2026-11-17. Everything below this line is still open.
 
-- **Batch 1 — Greek letters + named built-in functions** (delegated to
-  `frontend`, launching now): Greek letters (keybinding), trig +
-  inverse trig, hyperbolic + inverse hyperbolic, log/exponential.
-  Grouped together because they share one underlying mechanism — see
-  "Design notes" below.
+## Queued — small, do first
 
-## Queued (not started)
+- **Fix: Greek-letter shortcuts don't work as the first keystroke on a
+  brand-new line.** Root cause (traced, not guessed — see
+  `.claude/agents/frontend.md`'s "Lessons learned," the two most recent
+  entries): a plain-character shortcut (`\`, `;`, `$`, `#`, ...) reaches
+  the field via a buffered-replay path (`wirePendingInput()` →
+  `convertToMath()` → `insertChar()`) that only runs because the browser
+  inserts the literal character into the pending line's `contenteditable`
+  first, firing the `input` event that path depends on. Holding `Ctrl`
+  suppresses that normal text insertion, so a `Ctrl+<letter>` combo never
+  produces anything for that path to see or buffer — it's not a timing
+  issue, it's a different mechanism entirely for a modifier-key shortcut.
+  Proposed fix: have the pending line's own keydown handling
+  (`wireLineKeydown()`) recognize a mapped `Ctrl+<letter>`/`Ctrl+Shift+
+  <letter>` directly (the same way `wirePendingInput()`'s own `[`/`@`/
+  heading checks convert the line proactively), convert the line to math
+  right there, then insert the Greek command into the field that
+  conversion just created. Small, self-contained, no architecture
+  change — a good first pick for the next `frontend` delegation.
 
-- **Batch 2 — calculus & linear algebra**: definite/indefinite
-  integrals, single/partial derivatives, standard matrix functions
-  (det, inverse, transpose, etc.), statistical functions (mean,
-  median, variance, stdev, ... — likely over a range/matrix, exact set
-  still to be scoped), and an equation solver (one equation, and
-  systems of more than one — the system case almost certainly leans on
-  whatever matrix inverse/elimination machinery the matrix-functions
-  item above ends up building, so keeping them in the same batch
-  matters, not just file-collision avoidance). Queued behind Batch 1 so
-  both don't edit `src/notebook.html` at the same time.
+## Queued — Batch 2: calculus & linear algebra
 
-## Queued (not started), after Batch 2 — program blocks
+Definite/indefinite integrals, single/partial derivatives, standard
+matrix functions (det, inverse, transpose, etc.), statistical functions
+(mean, median, variance, stdev, ... — likely over a range/matrix, exact
+set still to be scoped), and an equation solver (one equation, and
+systems of more than one — the system case almost certainly leans on
+whatever matrix inverse/elimination machinery the matrix-functions item
+builds, so keep them in the same batch, not just for file-collision
+reasons). No design research done yet beyond what's in the paragraph
+above — that's the next delegation's first job.
 
-The biggest feature requested so far: a real programming construct
-living inside livesheet, styled as close to math notation as possible
-(explicitly requested: "for each element in collection" should use the
-*official* math symbol for that). Sequenced after Batches 1 and 2 on
-purpose — not just to avoid file collisions, but because it's large
-enough to deserve undivided attention, and it can lean on whatever
-array/collection infrastructure Batch 2's matrix work ends up building.
+## Queued — program blocks (biggest item, do after Batch 2)
+
+A real programming construct inside livesheet, styled as close to math
+notation as possible — explicitly requested: "for each element in
+collection" should use the *official* math symbol for that. Sequenced
+last on purpose: it's large enough to deserve undivided attention, and
+can lean on whatever array/collection infrastructure Batch 2's matrix
+work ends up building.
 
 **Confirmed against Mathcad's own real "Programming" feature** (PTC's
 own docs/tutorials, web-searched, not guessed):
 - `←` for **local assignment** inside a program — distinct from `:=`,
-  which stays the worksheet-level definition operator. This is the
-  actual reason Mathcad has two different assignment symbols at all.
+  the worksheet-level definition operator. This is the actual reason
+  Mathcad has two different assignment symbols at all.
 - `∈` for a **for-each** loop's binding (`for i ∈ 0…10`, or over any
-  other collection/array value) — exactly what the user asked for by
-  name, and it's also literally what Mathcad itself uses.
+  other collection/array value) — what the user asked for by name, and
+  also literally what Mathcad itself uses.
 - `if` / `otherwise` for conditionals, `while` for a condition-driven
   loop, `break` / `continue` / `return` for control inside a loop or
   program — Mathcad renders these as literal keyword operators (not a
-  special glyph), inserted the same way `sin`/`det`/etc. get their
-  upright styling (see the trig/log section below on
-  `autoOperatorNames` — likely the same mechanism applies here, confirm
-  rather than assume).
+  special glyph). Whether MathQuill's `autoOperatorNames` mechanism
+  (see the trig/log work already shipped, `PROGRESS.md`) already covers
+  these or needs extending is unconfirmed — check before assuming
+  either way, the same empirical-check standard that work was held to.
 - A program block evaluates to its **last statement's value** (Mathcad
   convention) unless an earlier `return` exits it first.
 
 **The hard architectural problem, not yet solved — this is the real
 scope of this item**: every line type so far (math, matrix, graph) is
-a *flat* structure — a matrix is a 2D grid of cells, but a program's
-body is a *tree* (a `for`/`while`/`if`'s body is itself a sequence of
-statements, which can itself contain another `for`/`if`, to arbitrary
-depth in real Mathcad). Building a genuinely recursive nested-block
-editor (indent-aware navigation, a bracket that visually grows/shrinks
-per nesting level, Tab/arrow movement crossing nesting boundaries) in
-the same keyboard-driven single-field-per-line model this app has used
+*flat* — a matrix is a 2D grid of cells, but a program's body is a
+*tree* (a `for`/`while`/`if`'s body is itself a sequence of statements,
+which can itself contain another `for`/`if`, to arbitrary depth in real
+Mathcad). Building a genuinely recursive nested-block editor (indent-
+aware navigation, a bracket that visually grows/shrinks per nesting
+level, Tab/arrow movement crossing nesting boundaries) in the same
+keyboard-driven single-field-per-line model this app has used
 throughout is the single biggest design lift of the whole project —
 bigger than matrices and graphing combined.
 
@@ -71,99 +88,42 @@ nesting only — a program block can contain a sequence of local
 assignments (`x ← expr`), *one* `for`/`while` loop, *one* `if`/
 `otherwise`, and a `return`/trailing expression, but a loop's or
 conditional's own body is restricted to plain statements (no loop
-inside a loop, no if inside a for, etc., in v1). Revisit once this is
-built and in use — extending nesting depth later is additive, not a
-rewrite, if the block structure is designed with that in mind from the
-start (i.e. a statement's body should already be "a list of
-statements," just not allowed to recurse yet, not hard-coded as "a
-list of only assignment lines").
+inside a loop, no if inside a for, in v1). Revisit once this is built
+and in use — extending nesting depth later should be additive, not a
+rewrite, if a statement's body is designed from the start as "a list of
+statements that isn't yet allowed to recurse," not hard-coded as "a
+list of only assignment lines."
 
 **Block-start shortcut**: no single well-documented bare-key Mathcad
 convention exists for inserting a program block (unlike `;`/`$`/`#`/`@`,
 which all had one) — Mathcad inserts it via a toolbar/ribbon. `{` is
-the proposed shortcut (unclaimed, and visually matches how a program
-block is bracketed, and how piecewise-function notation already uses
-`{` for cases) — open to the user overriding this before it's built.
+the proposed shortcut (unclaimed; visually matches how a program block
+is bracketed and how piecewise-function notation already uses `{`) —
+open to override before it's built.
 
-## Queued (not started) — F1 help overlay
+## Queued — F1 help overlay
 
-Research done (Omarchy global bindings, checked the same way as the
-Ctrl/Ctrl+Shift research below; and general F-key UX convention,
-web-searched): **F1–F12 are completely unclaimed by Omarchy** — grepped
-every default Hyprland binding file, zero matches for a literal F-key
-(media/brightness keys use separate `XF86...` hardware codes, not the
-F1–F12 codes, so there's no overlap at all). All twelve are free to use
-within the app with zero compositor-level collision risk.
-
-On what to actually do with them: the research found no universal
-convention beyond **F1 = Help**, which is close to universally
-recognized across software going back decades (and fits this app's
-whole keyboard-centric, no-menu-bar design better than most — it's the
-same spirit as the F-key command bar classic DOS-era keyboard-driven
-apps like WordPerfect/Lotus 1-2-3 used, which is squarely the kind of
-app livesheet already resembles). Everything else about F-keys
-(F2=rename, F5=refresh, ...) is Windows/Office-specific convention that
-doesn't map onto anything livesheet has.
+Research done (Omarchy global bindings, grepped every default Hyprland
+binding file — zero matches for a literal F-key anywhere; media/
+brightness keys use separate `XF86...` hardware codes, no overlap at
+all — so all twelve are free with zero compositor-level collision
+risk; and general F-key UX convention, web-searched): no universal
+convention beyond **F1 = Help**, which fits this app's keyboard-centric,
+no-menu-bar design well — the same spirit as the F-key command bar
+classic DOS-era keyboard-driven apps (WordPerfect, Lotus 1-2-3) used,
+which is squarely the kind of app livesheet already resembles.
 
 **Decided design, deliberately small rather than forcing all 12 keys to
 do something**: `F1` toggles a full "Shortcuts & Help" overlay listing
-every current shortcut grouped by category (line-type starters: `#`/
-`##`/`###`/`[`/`@`/(`{` once program blocks land); math-field operators:
-`:` `/` `\` `|` `=`; range & Σ/Π: `;` `$` `#`; Greek letters: the
-Ctrl/Ctrl+Shift table; graphing; app-level Ctrl+S/Q/L/L) with a
-one-line description each — essentially the README's own shortcut
-tables, surfaced inside the app instead of making the user tab out to
-read a file. `Escape` closes it (confirmed unused in `src/notebook.html`
-today, and is the near-universal "dismiss an overlay" key). **F2–F12
-are deliberately left unassigned for now** rather than inventing
-speculative uses just because the keys are free — assign one only when
-a real, concrete need shows up, not preemptively.
-
-Keep the overlay's content and README.md's shortcut tables from
-drifting apart — whoever builds this should decide whether that means
-generating one from the other, or just a code comment on both sides
-pointing at each other as a manual-sync reminder; either is fine, silent
-drift between them is not.
-
-## Design notes (so the next delegation doesn't re-derive these)
-
-- **Greek letters**: `Ctrl+<letter>` for lowercase, `Ctrl+Shift+<letter>`
-  for uppercase — confirmed free of Omarchy's compositor bindings
-  (every Omarchy `CTRL`-based shortcut also requires `SUPER`). Reserved
-  letters: `a/c/v/x` (copy/paste/cut/select-all, must keep working) and
-  `s/q/l` in their *plain* form only (livesheet's own export/quit/paper
-  shortcuts — `Ctrl+Shift+S/Q/L` are free). Mapping:
-  - Lowercase: b→β d→δ e→ε f→φ g→γ h→η i→ι j→ξ k→κ m→μ n→ν o→ω p→π r→ρ
-    t→τ u→υ w→χ y→ψ z→ζ (alpha and omicron don't get a slot — see the
-    manager's reply in conversation for the full reasoning; omicron is
-    visually identical to "o" anyway so that's not a real loss).
-  - Uppercase: g→Γ d→Δ q→Θ l→Λ j→Ξ p→Π s→Σ u→Υ f→Φ y→Ψ o→Ω (the 11
-    MathQuill actually renders distinctly from their Latin capital).
-  - Using Greek letters as real variables/function parameters (not just
-    decoration) needs evaluateLatex()'s identifier model extended
-    beyond "one Latin letter" to also accept a Greek command token
-    (`\alpha`, `\beta`, ...) — touches parseAtom's letter branch and
-    both collectDefinitions() regexes (variable and function
-    definitions). This is the non-trivial part of this item.
-- **Trig/hyperbolic/log/exp functions**: MathQuill already auto-
-  recognizes typed letter sequences like "sin", "cos", "ln", "det" as
-  upright operator names (`autoOperatorNames`, confirmed in
-  `src/mathquill/mathquill.min.js`) — **no new keybinding needed for
-  these**, they already look right the moment you type them. MathQuill's
-  *default* list covers: `sin cos tan arcsin arccos arctan sinh cosh
-  tanh sec csc cot coth` plus `arg deg det dim exp gcd hom inf ker lg
-  lim ln log max min sup limsup liminf injlim projlim Pr` — notably
-  missing `sech`, `csch`, and every inverse of sec/csc/cot and every
-  inverse hyperbolic form (`arcsinh`, `arcsech`, ...). MathQuill exposes
-  `MQ.config({ autoOperatorNames: "..." })` to extend that list — use it
-  to add the missing names rather than leaving them rendering as
-  italic-letter juxtaposition.
-  The real work is evaluator-side: `evaluateLatex()`'s `parseAtom`
-  currently only recognizes a *single* Latin letter as an identifier
-  (whether a variable, or — if followed by `(`/`\left(` — a
-  user-defined function call via `funcs`). Multi-letter built-in names
-  need a second lookup table (name → JS `Math.*` function, e.g.
-  `sin`→`Math.sin`, `asin`/`arcsin`→`Math.asin`, `ln`→`Math.log`,
-  `log`→`Math.log10`) checked before falling through to the
-  single-letter path, with the same broadcasting support (via
-  `broadcastUnary`) the rest of the evaluator already has for ranges.
+every current shortcut grouped by category (line-type starters, math-
+field operators, range & Σ/Π, Greek letters, built-in functions,
+graphing, app-level) with a one-line description each — essentially
+README's own shortcut tables, surfaced inside the app instead of making
+the user tab out to read a file. `Escape` closes it (confirmed unused
+in `src/notebook.html`, and the near-universal "dismiss an overlay"
+key). **F2–F12 deliberately left unassigned** — assign one only when a
+real, concrete need shows up, not preemptively. Keep the overlay's
+content and README's shortcut tables from drifting apart — decide
+whether that means generating one from the other, or just a comment on
+both sides pointing at each other as a manual-sync reminder; silent
+drift between them is the one outcome to avoid.

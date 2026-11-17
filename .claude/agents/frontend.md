@@ -176,17 +176,51 @@ trap and its fix.
   before wiring up the keybinding, not by testing after the fact — worth
   doing this trace *before* implementing a new keybinding whenever the
   evaluator already special-cases a particular token.
+- **2026-11-17** — **Correction to this same day's earlier entry below,
+  found on a later re-check** — the claim that Greek letters' fresh-line
+  behavior is "true of every existing field-only shortcut too (`\`, `;`,
+  `$`, `#`, ...)" is wrong, not just imprecise. Traced it end to end:
+  `\`/`;`/`$`/`#`/`:`/`|`/`=` each type a literal, unmodified character,
+  so on a pending line they go through the *browser's own* default
+  contenteditable insertion first — that's what fires the "input" event
+  `wirePendingInput()` listens for, which calls `convertToMath(line,
+  text)`, which *replays* that buffered character through `insertChar()`
+  once `line.mathField` exists. That replay is what makes `\` open a
+  square root as literally the first keystroke on a brand-new line — it
+  isn't going through the global keydown listener's `hostLine`
+  resolution at all for that first character, it's going through this
+  separate buffered-replay path instead. A `Ctrl+<letter>` combo is
+  different in kind, not just in when it's checked: holding Ctrl
+  suppresses the browser's normal text-insertion behavior, so pressing
+  `Ctrl+B` on a pending line produces *no* text and fires no `input`
+  event — there's nothing for `wirePendingInput()` to see or buffer, so
+  the replay path Greek letters would need never runs. This is a real,
+  fixable gap specific to any *modifier-key* shortcut (Greek letters
+  today; anything added the same way later), not a property shared by
+  the existing plain-character shortcuts. A fix would need the pending-
+  line's own keydown handling (`wireLineKeydown()`) to recognize a
+  mapped `Ctrl+<letter>` directly, convert the line to math right there
+  (the same way `wirePendingInput()`'s own special-character checks
+  do), and *then* insert the Greek command into the field that
+  conversion just created — not a buffered-replay fix, a direct one.
+  Lesson under the lesson: re-verify a claim like "this is a general
+  property, not a new gap" by tracing the actual mechanism for at least
+  one comparison case end to end, the same rigor the gap itself got,
+  rather than reasoning from "they're both field-scoped shortcuts, so
+  they probably behave the same."
 - **2026-11-17** — The global capture-phase keydown listener only ever
   sees a *math/graph/matrix-cell* MathQuill field via `.closest(".math-
   line, .graph-line")`/`.closest(".matrix-cell")` — a brand-new "pending"
   line (plain `contenteditable`, no MathQuill field yet) doesn't resolve
-  to anything, so any shortcut gated on that resolution (new or existing)
-  is a no-op there. A user has to type one ordinary character first (to
-  commit the line to "math") before a field-only shortcut like a new
-  Ctrl+<letter> binding does anything on that line — this is true of
-  every *existing* field-only shortcut too (`\`, `;`, `$`, `#`, ...), not
-  a gap specific to whatever's newly added. Don't assume a fresh pending
-  line behaves like a math line when testing a new field-scoped shortcut
-  live; create the line, type a throwaway character, backspace it, then
-  test the shortcut — same pattern `insertChar()`'s buffered-replay path
-  already relies on for pending-line input.
+  to anything, so a shortcut gated on that resolution alone is a no-op
+  there. For a shortcut typed as an unmodified character (`\`, `;`, `$`,
+  `#`, ...), this doesn't matter in practice — see the correction above,
+  it reaches the field anyway via the separate buffered-replay path. For
+  a *modifier-key* shortcut (Greek letters' `Ctrl+<letter>`), it does
+  matter, and is an open, unfixed gap (see `TODO.md`). Don't assume a
+  fresh pending line behaves like a math line when testing a new
+  field-scoped shortcut live; create the line, type a throwaway
+  character, backspace it, then test the shortcut — and separately,
+  also test it as the actual first keystroke on a brand-new line, since
+  those two cases can genuinely differ depending on which mechanism the
+  shortcut goes through.

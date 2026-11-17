@@ -323,8 +323,19 @@ below was verified by building (`bin/build`), running the backend tests
     sum-over-range shortcut (`Σk² = 14` over `k:=0…3`) still works
     unchanged. Also confirmed the Greek-letter shortcut only fires inside
     an actual math/graph/matrix-cell field — on a brand-new pending line
-    it's a no-op (by design, matching this item's own scope — a pending
-    line has no MathQuill field yet to insert into).
+    it's a no-op.
+  - **Correction, found on a later re-check**: the fresh-pending-line
+    no-op above was originally written off as "by design, the same as
+    every other field-only shortcut." That's wrong — a plain-character
+    shortcut (`\`, `;`, `$`, `#`, ...) *does* work as literally the
+    first keystroke on a brand-new line, via a buffered-replay path
+    (`wirePendingInput()` → `convertToMath()` → `insertChar()`) that a
+    `Ctrl+<letter>` combo never enters, because holding Ctrl suppresses
+    the browser's normal text insertion that path depends on. This is a
+    real, open, fixable gap specific to Greek letters (and any future
+    modifier-key shortcut), not a shared property of every shortcut —
+    see `TODO.md` for the queued fix and `.claude/agents/frontend.md`'s
+    "Lessons learned" for the full trace.
 
 - **Built-in named functions (`sin cos tan ...`, no definition needed)**
   — `sin cos tan sec csc cot` and their inverses (`arcsin arccos arctan

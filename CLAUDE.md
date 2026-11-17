@@ -1,9 +1,13 @@
 # livesheet — project instructions
 
 A one-window, keyboard-only math notebook for Omarchy. See `README.md`
-for the user-facing feature list and `PROGRESS.md` for what's been
-verified so far — both are kept up to date as features land, and both
-should stay that way.
+for the user-facing feature list, `PROGRESS.md` for what's been
+verified so far, and **`TODO.md` for what's requested but not done
+yet** — all three are kept up to date as features land and should stay
+that way. Read `TODO.md` at the start of any session that's continuing
+this project's work; it's written specifically so a new session doesn't
+have to re-read the whole prior conversation to know what's next and
+why it's scoped the way it is.
 
 ## Architecture (for routing work — read the actual code for detail)
 
@@ -37,6 +41,11 @@ Default to coordinating, not implementing everything yourself:
 - A subagent's report describes what it *intended* to do, not a
   verified fact — check the actual diff before treating delegated work
   as done, the same way you would for your own.
+- Keep `TODO.md` current as work moves: remove an item once it's done
+  and its details are in `PROGRESS.md`, and write down the design
+  research/decisions for anything you investigate before delegating it
+  — the point is that a later session (or a fresh subagent with no
+  memory) can act on it without re-doing that work.
 
 ## Intellectual property
 
