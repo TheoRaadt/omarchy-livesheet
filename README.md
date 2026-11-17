@@ -75,6 +75,26 @@ Matrix cells hold plain numbers, variables, or expressions — they don't
 support the `:`, `\`, `|`, or `=` shortcuts the way a regular math line
 does. Exported as a standard `\begin{bmatrix}...\end{bmatrix}`.
 
+`@` at the start of a line (Mathcad's own bare shortcut for inserting an
+X-Y plot) starts a **graph** instead of a math field:
+
+- Type the expression to plot in terms of `x` right after the `y =`, e.g.
+  `x^2`, or call a function defined on an earlier line, e.g. `f(x)`
+- The plot updates live as you type, over a fixed `x ∈ [-10, 10]` domain
+  with the y-axis auto-scaled to fit — there's no separate placeholder for
+  the axis limits, unlike a real Mathcad X-Y plot
+- A part of the curve that can't be evaluated (dividing by zero, an
+  undefined reference, ...) leaves a gap instead of a spurious straight
+  line across it, the same way a real graph doesn't connect across an
+  asymptote
+- **Enter** finishes the graph and starts a new line below it;
+  **Backspace** on an empty expression removes the graph, same as an
+  empty math line
+- Exported as just the defining equation (`y = ...`, as a normal display
+  equation) rather than a plotted image — turning sampled points into an
+  actual embedded plot in the `.tex`/`.pdf` output would need a real
+  plotting package (e.g. `pgfplots`), which is out of scope here
+
 ## Shortcuts
 
 | Key      | Action   |

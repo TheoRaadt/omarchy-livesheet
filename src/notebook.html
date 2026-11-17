@@ -103,6 +103,41 @@
   .matrix-cell {
     display: inline-block;
   }
+  /* A graph line is the "y =" expression field stacked above its plot —
+     see convertToGraph()/renderGraph(). Monochrome by design, the same
+     as everything else on the page: the curve and axes are drawn in
+     currentColor (at full and reduced opacity respectively) so they
+     follow the dark/paper toggle automatically instead of needing their
+     own color handling. */
+  .line.graph-line {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .graph-expr {
+    font-size: 1.3em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .graph-ylabel {
+    opacity: 0.6;
+  }
+  .graph-plot {
+    width: 100%;
+    max-width: 600px;
+    height: 260px;
+  }
+  .graph-axis {
+    stroke: currentColor;
+    stroke-opacity: 0.3;
+    stroke-width: 1;
+  }
+  .graph-curve {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+  }
   /* MathQuill's own field chrome (border/shadow, defaults to a light
      theme) is replaced here to blend into the current background/ink,
      dark or paper. */
@@ -129,6 +164,9 @@
     //   - "math": one MathQuill field — the normal case for a line of math.
     //   - "matrix": a grid of small MathQuill fields (one per cell) instead
     //     of a single field; see the matrix functions below.
+    //   - "graph": one MathQuill field (the "y =" expression, line.mathField
+    //     same as "math") plus an SVG plot (line.svg) below it that
+    //     redraws on every edit; see convertToGraph()/renderGraph().
     // Every line keeps its spot in the `lines` array and in the #notebook
     // DOM in sync, so `lines[i]` and the i-th child of #notebook always
     // refer to the same line.
@@ -157,7 +195,7 @@
     // the previous line, or Shift+Tab/Up out of the line after this one).
     function focusLine(line, toEnd) {
       if (!line) return;
-      if (line.type === "math") line.mathField.focus();
+      if (line.type === "math" || line.type === "graph") line.mathField.focus();
       else if (line.type === "matrix") {
         var r = toEnd ? line.rows.length - 1 : 0;
         focusCell(line, r, toEnd ? line.rows[r].length - 1 : 0);
@@ -835,6 +873,147 @@
       return "\\begin{bmatrix}" + rows.join(" \\\\ ") + "\\end{bmatrix}";
     }
 
+    // A graph always plots over this fixed, symmetric x-domain — no axis-
+    // limit placeholders to fill in, unlike a real Mathcad X-Y plot. Kept
+    // simple on purpose: GRAPH_SAMPLES points are evaluated on every
+    // keystroke (see convertToGraph()'s "edit" handler), which is cheap
+    // enough for live updates at this count but wouldn't stay that way at
+    //, say, 10x as many.
+    var GRAPH_DOMAIN = 10;
+    var GRAPH_SAMPLES = 200;
+
+    // Draws one straight-line SVG <line> element — the building block
+    // both axis lines in renderGraph() are made of.
+    function appendGraphLine(svg, x1, y1, x2, y2) {
+      var el = document.createElementNS(svg.namespaceURI, "line");
+      el.setAttribute("x1", x1);
+      el.setAttribute("y1", y1);
+      el.setAttribute("x2", x2);
+      el.setAttribute("y2", y2);
+      el.setAttribute("class", "graph-axis");
+      svg.appendChild(el);
+    }
+
+    // Samples the graph's expression across [-GRAPH_DOMAIN, GRAPH_DOMAIN],
+    // binding "x" to each sample on top of whatever collectDefinitions()
+    // finds above this line (so a graph can plot a previously-defined
+    // function, e.g. "f(x)", the same way any other line could call one),
+    // and redraws the SVG from scratch. A sample that can't be evaluated
+    // (an undefined reference, 1/0, a range-variable result rather than a
+    // plain number, ...) breaks the curve there instead of drawing a
+    // spurious straight segment across the gap — the same idea as an
+    // asymptote not being connected across itself on a real graph.
+    function renderGraph(line) {
+      var svg = line.svg;
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+      var exprLatex = line.mathField.latex();
+      if (!exprLatex) return;
+      var defs = collectDefinitions(line);
+
+      var points = [];
+      for (var i = 0; i <= GRAPH_SAMPLES; i++) {
+        var x = -GRAPH_DOMAIN + (2 * GRAPH_DOMAIN * i) / GRAPH_SAMPLES;
+        var vars = { x: x };
+        for (var k in defs.vars) if (k !== "x") vars[k] = defs.vars[k];
+        try {
+          var y = evaluateLatex(exprLatex, vars, defs.funcs);
+          points.push(typeof y === "number" && isFinite(y) ? [x, y] : null);
+        } catch (e) {
+          points.push(null);
+        }
+      }
+
+      var finiteYs = [];
+      for (var p = 0; p < points.length; p++) if (points[p]) finiteYs.push(points[p][1]);
+      if (finiteYs.length === 0) return; // nothing plottable yet; leave it blank
+
+      var yMin = Math.min.apply(null, finiteYs), yMax = Math.max.apply(null, finiteYs);
+      if (yMin === yMax) { yMin -= 1; yMax += 1; } // a flat line still gets visible room
+      var padding = (yMax - yMin) * 0.1;
+      yMin -= padding; yMax += padding;
+
+      var W = 600, H = 300;
+      function toPx(px, py) {
+        return [
+          ((px + GRAPH_DOMAIN) / (2 * GRAPH_DOMAIN)) * W,
+          H - ((py - yMin) / (yMax - yMin)) * H
+        ];
+      }
+
+      // The vertical (x=0) axis is always in view — the domain is fixed
+      // and symmetric around 0 — but the horizontal (y=0) one only is if
+      // the auto-scaled y-range actually reaches 0.
+      var originPx = toPx(0, 0);
+      appendGraphLine(svg, originPx[0], 0, originPx[0], H);
+      if (yMin <= 0 && 0 <= yMax) appendGraphLine(svg, 0, originPx[1], W, originPx[1]);
+
+      // The curve itself, as one or more polylines: a run of consecutive
+      // plottable points becomes one <polyline>, and a gap (a null from
+      // the sampling loop above) ends the current one and starts a new
+      // one on the far side, leaving a visible break.
+      var segment = [];
+      function flushSegment() {
+        if (segment.length > 1) {
+          var poly = document.createElementNS(svg.namespaceURI, "polyline");
+          poly.setAttribute("points", segment.map(function (pt) {
+            var px = toPx(pt[0], pt[1]);
+            return px[0] + "," + px[1];
+          }).join(" "));
+          poly.setAttribute("class", "graph-curve");
+          svg.appendChild(poly);
+        }
+        segment = [];
+      }
+      for (var j = 0; j < points.length; j++) {
+        if (points[j]) segment.push(points[j]);
+        else flushSegment();
+      }
+      flushSegment();
+    }
+
+    // Turns a pending line into a graph: Mathcad's own bare "@" shortcut
+    // for inserting an X-Y plot. Unlike a real Mathcad plot (which has
+    // separate placeholders for the axis limits too), this always plots
+    // over the fixed domain above and auto-scales the y-axis to fit —
+    // one placeholder (the expression) rather than several, in keeping
+    // with how small the rest of this app's own shortcuts are kept.
+    function convertToGraph(line) {
+      var container = document.createElement("div");
+      container.className = "line graph-line";
+      line.el.replaceWith(container);
+      line.el = container;
+      line.type = "graph";
+
+      var exprRow = document.createElement("span");
+      exprRow.className = "graph-expr";
+      var yLabel = document.createElement("span");
+      yLabel.className = "graph-ylabel";
+      yLabel.textContent = "y =";
+      var exprEl = document.createElement("span");
+      exprRow.appendChild(yLabel);
+      exprRow.appendChild(exprEl);
+      container.appendChild(exprRow);
+
+      var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "graph-plot");
+      svg.setAttribute("viewBox", "0 0 600 300");
+      container.appendChild(svg);
+      line.svg = svg;
+
+      var mathField = MQ.MathField(exprEl, {
+        handlers: {
+          enter: function () { onEnter(line); },
+          deleteOutOf: function (dir) { onDeleteOutOf(line, dir); },
+          moveOutOf: function (dir) { onMoveOutOf(line, dir); },
+          edit: function () { renderGraph(line); }
+        }
+      });
+      line.mathField = mathField;
+      container._line = line;
+      mathField.focus();
+    }
+
     // Enter/Backspace for a plain contenteditable line — used by pending
     // lines and (since convertToHeading never replaces the element, only
     // its class/content) heading lines too. Enter always inserts a new
@@ -871,6 +1050,12 @@
         if (text === "[") {
           line.el.textContent = "";
           convertToMatrix(line);
+          return;
+        }
+        // Mathcad's own bare shortcut for inserting an X-Y plot.
+        if (text === "@") {
+          line.el.textContent = "";
+          convertToGraph(line);
           return;
         }
         // "#", "##", or "###" alone might still be building up to "# ",
@@ -1006,7 +1191,12 @@
         return;
       }
 
-      var hostLineEl = e.target.closest ? e.target.closest(".math-line") : null;
+      // A graph's own expression field gets the same construct shortcuts
+      // (sqrt, nth root, ranges, sum/product...) as a regular math line,
+      // but not "=" — there's no single result to evaluate-and-append to,
+      // the whole line already continuously re-evaluates itself per
+      // sample (see renderGraph()) as you type.
+      var hostLineEl = e.target.closest ? e.target.closest(".math-line, .graph-line") : null;
       var hostLine = hostLineEl && hostLineEl._line;
       if (!hostLine) return;
 
@@ -1015,7 +1205,8 @@
       // otherwise just type a literal semicolon, "$"/"#" would otherwise
       // just type those literal characters) that we override here, via
       // the same insertChar() used for buffered replay.
-      if (e.key === ":" || e.key === ";" || e.key === "\\" || e.key === "|" || e.key === "=" || e.key === "$" || e.key === "#") {
+      if (e.key === ":" || e.key === ";" || e.key === "\\" || e.key === "|" || e.key === "$" || e.key === "#" ||
+          (e.key === "=" && hostLine.type !== "graph")) {
         e.preventDefault(); e.stopImmediatePropagation();
         insertChar(hostLine, e.key);
       }
@@ -1037,6 +1228,12 @@
       return lines.map(function (line) {
         if (line.type === "math") return { type: "math", content: line.mathField.latex() };
         if (line.type === "matrix") return { type: "math", content: matrixLatex(line) };
+        // A graph has no plotted-image equivalent in the exported LaTeX —
+        // that would need an actual plotting package (pgfplots or
+        // similar) driven from sampled data, well beyond this app's
+        // scope — so it degrades to just the defining equation, "y = "
+        // plus whatever was typed, as a normal display equation.
+        if (line.type === "graph") return { type: "math", content: "y=" + line.mathField.latex() };
         if (line.type === "heading-1") return { type: "title", content: line.el.textContent };
         if (line.type === "heading-2") return { type: "paragraph", content: line.el.textContent };
         if (line.type === "heading-3") return { type: "subparagraph", content: line.el.textContent };

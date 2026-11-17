@@ -162,6 +162,49 @@ below was verified by building (`bin/build`), running the backend tests
     on-dark to black-on-white filling the whole window, and back again
     on a second `Ctrl+L`.
 
+- **Graphing (Mathcad-style, bare `@` for an X-Y plot)** — `@` starts a
+  new "graph" line type: a MathQuill expression field ("y ="), live-
+  plotted below it as an SVG curve over a fixed `x ∈ [-10, 10]` domain
+  with the y-axis auto-scaled to the computed data. Can plot a plain
+  expression (`x^2`) or call a function defined on an earlier line
+  (`f(x)`), reusing `evaluateLatex()`/`collectDefinitions()` unchanged —
+  the graph just binds `x` to each of 201 sampled values and evaluates
+  the expression once per sample on every edit.
+  - A sample that throws (undefined reference, 1/0, a range-variable
+    result instead of a plain number, ...) breaks the curve into a new
+    `<polyline>` there instead of drawing a spurious straight line across
+    the gap, the same way a real asymptote isn't connected across itself.
+  - Exports as just the defining equation (`y = ...`) rather than an
+    embedded plot image — an actual rendered graph in the `.tex`/`.pdf`
+    output would need a real plotting package (`pgfplots` or similar),
+    out of scope here; documented as a known limitation in the README.
+  - **Real bug caught by live testing, not by the Node-level checks**:
+    `focusLine()` (the one function responsible for putting the cursor
+    into any line type once it exists) only had explicit cases for
+    `"math"` and `"matrix"` — a `"graph"` line fell through to the
+    generic contenteditable-focus path, which does nothing useful on a
+    non-editable container div. The failure mode was severe: backspacing
+    an empty graph line left focus nowhere at all, and *every* keystroke
+    afterward — not just on that line, anywhere in the document — silently
+    did nothing, with no error, crash, or visual sign something was wrong.
+    Caught only by testing the actual multi-line flow (define a function,
+    graph a call to it) rather than each graph in isolation. Fixed by
+    adding `"graph"` alongside `"math"` in `focusLine()`'s first branch
+    (both just focus `line.mathField`).
+  - Verified live in the running app: `x^2` plots a correctly-centered
+    parabola with both axes drawn; `1/x` correctly breaks into two
+    separate branches at the asymptote instead of a spurious vertical
+    line through it; defining `g(x):=x^3-4x` on one line and graphing
+    `g(x)` on the next plots the call correctly, and backspacing an empty
+    graph line no longer freezes input (the bug above, now fixed).
+  - One test-environment caveat, not an app issue: this session's
+    synthetic keystroke tool (`wtype`, used to drive the GUI for testing)
+    silently drops a typed `-` character in this environment — confirmed
+    independently (typing `-5` produced `5`, and `-5=` evaluated to
+    `5=5`). An intermediate screenshot showing `g(x):=x^3-4x` as
+    `x^{3}4x` is that tool limitation, not a parsing bug; typing the same
+    thing from a real keyboard is unaffected.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
