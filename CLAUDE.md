@@ -38,6 +38,20 @@ Default to coordinating, not implementing everything yourself:
   verified fact — check the actual diff before treating delegated work
   as done, the same way you would for your own.
 
+## Intellectual property
+
+This project deliberately mirrors a lot of Mathcad's own conventions
+(keyboard shortcuts, programming-block symbols like `←`/`∈`). That's
+fine — shortcuts are functional choices and math notation is universal,
+neither is protectable IP, and citing "Mathcad's own shortcut for X" as
+attribution is normal, legal, descriptive use of a trademark. What's
+never acceptable, for the manager or either subagent: using the
+"Mathcad"/PTC name or branding as if livesheet were affiliated with or
+endorsed by them, copying their documentation text or source code
+verbatim, or cloning their specific UI/icon design. Adopt the
+functional idea, attribute it in your own words, never paste their
+protected expression.
+
 ## Lessons learned (every session, before closing)
 
 Before ending a session where real work happened (skip this for a
