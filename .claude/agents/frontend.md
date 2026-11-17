@@ -117,3 +117,76 @@ trap and its fix.
   Before trusting a screenshot that shows missing/wrong content, confirm
   which window actually has OS focus and isolate the specific keystroke
   in question before concluding it's a code bug.
+- **2026-11-17** — In `evaluateLatex`, a value that "can't be evaluated"
+  almost never actually throws once every referenced letter is bound to
+  *some* value (as a graph always does, for `x` and — in 3D — `y` too):
+  JS division by zero gives `Infinity`/`NaN`, not an exception, so the
+  existing 2D `1/x` asymptote gap (and the new 3D `1/(x-y)` one) is
+  produced by the sampling loop's own `isFinite()` check, not by its
+  `try`/`catch`. A genuine *throw* from this evaluator is almost always
+  structural (same letter missing from `vars`/`funcs` every time, not
+  value-dependent) — e.g. an undefined third variable throws uniformly
+  for every grid point, never just some. When testing "a point that
+  can't be evaluated leaves a gap," write the test around a numeric
+  singularity (division by zero on some subset of sampled points), not
+  around an expectation that the evaluator will throw differently
+  depending on the sampled value — it won't. This also made the 2D-vs-3D
+  mode detection easy to get right: testing with one sample and checking
+  for the specific `"undefined variable y"` message (rather than probing
+  multiple points) is already sufficient, since that outcome doesn't
+  vary by which value `x`/`y` are bound to.
+- **2026-11-17** — Before assuming MathQuill's shipped `mathquill.min.js`
+  is missing an `autoOperatorNames` entry (e.g. "sech"/"csch" "aren't in
+  the default list"), verify empirically, not by reading the minified
+  source: its startup code expands a handful of hardcoded names (`sin
+  cos tan sec cosec csc cotan cot ctg`) into every `arc`-/`h`-/`ar`-
+  combination *programmatically at load time*, so the real default table
+  is far larger than the literal strings visible in the minified text —
+  "sech"/"csch"/`arcsec`/`arccot`/every inverse-hyperbolic form are
+  already in it. The fast, reliable way to check: write a throwaway HTML
+  page that loads the project's actual `mathquill.min.js`, creates a
+  `MathField`, calls `.typedText("name(2)")`, and reads back `.latex()`;
+  run it with `chromium --headless=new --no-sandbox --disable-gpu
+  --virtual-time-budget=5000 --dump-dom file://...` and grep the result
+  out of a `document.title` you set from the page's own script — no
+  X server, Wayland, or the real app needed, and it's exact, not
+  inferred. This also caught that `MQ.config({autoOperatorNames:
+  "..."})`'s setter *replaces* the whole table with only the names in
+  the given string (it does not do the arc/h-expansion trick above) — so
+  "extending" it with a short string of just the missing names would
+  have silently dropped everything else (`gcf`, `Pr`, `injlim`, ...).
+- **2026-11-17** — MathQuill never auto-recognizes a shorter `a`-prefixed
+  function name (`asin`, `acosh`, ...) as one token — only `arc`-/`ar`-
+  prefixed forms are in its generated name list (see above). Typing
+  `asin(` live actually produces a separate italic variable `a`
+  immediately followed by a recognized `\sin`, rendering as
+  `a\sin\left(...\right)` — i.e. "a times sin(...)", a different,
+  already-meaningful expression. Don't special-case an evaluator to
+  reinterpret that token sequence as the inverse function; it would
+  silently break the legitimate "a is a real variable" case.
+- **2026-11-17** — Before giving a keyboard shortcut a token that's also
+  one of `evaluateLatex()`'s own special leading tokens (e.g. `\Sigma`/
+  `\Pi`, which `parseAtom` treats unconditionally as the sum/product
+  prefix before ever checking "is this a defined variable"), check
+  whether the shortcut's *other* intended use (here: Greek letters as
+  plain identifiers) can collide with that existing meaning. It can
+  silently miscompute rather than error: `\Sigma:=5` then `\Sigma+1`
+  would parse fine as "reduce `+1` over nothing" (`=1`) instead of `6`,
+  with no exception to catch. Caught by tracing `parseAtom`'s check order
+  before wiring up the keybinding, not by testing after the fact — worth
+  doing this trace *before* implementing a new keybinding whenever the
+  evaluator already special-cases a particular token.
+- **2026-11-17** — The global capture-phase keydown listener only ever
+  sees a *math/graph/matrix-cell* MathQuill field via `.closest(".math-
+  line, .graph-line")`/`.closest(".matrix-cell")` — a brand-new "pending"
+  line (plain `contenteditable`, no MathQuill field yet) doesn't resolve
+  to anything, so any shortcut gated on that resolution (new or existing)
+  is a no-op there. A user has to type one ordinary character first (to
+  commit the line to "math") before a field-only shortcut like a new
+  Ctrl+<letter> binding does anything on that line — this is true of
+  every *existing* field-only shortcut too (`\`, `;`, `$`, `#`, ...), not
+  a gap specific to whatever's newly added. Don't assume a fresh pending
+  line behaves like a math line when testing a new field-scoped shortcut
+  live; create the line, type a throwaway character, backspace it, then
+  test the shortcut — same pattern `insertChar()`'s buffered-replay path
+  already relies on for pending-line input.

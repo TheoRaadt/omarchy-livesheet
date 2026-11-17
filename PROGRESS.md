@@ -205,6 +205,191 @@ below was verified by building (`bin/build`), running the backend tests
     `x^{3}4x` is that tool limitation, not a parsing bug; typing the same
     thing from a real keyboard is unaffected.
 
+- **3D surface plotting (same `@` graph line, auto-detected)** — the
+  same graph expression field now plots a wireframe surface `z=f(x,y)`
+  instead of a 2D curve, with no new shortcut: `renderGraph()` tries
+  evaluating the expression with just `x` bound (exactly like the 2D
+  path always has); if that throws specifically because `y` is the
+  undefined reference, the expression must be using `y` as a second free
+  variable, so it switches to 3D (binding both `x` and `y` across a
+  15x15 grid, each always overriding any same-named `collectDefinitions()`
+  entry, same rule as `x` already had). Anything else — `y` unused, or
+  already defined by an earlier line like `y:=5` and used as that
+  ordinary value — stays on the unchanged 2D path. The "y ="/"z =" label
+  to the left of the field updates live in `renderGraph()` since the
+  mode can't be known until the expression is actually evaluated.
+  Rendered as an SVG wireframe (no 3D/graphing library, consistent with
+  the rest of the project having no build step): a fixed isometric
+  projection (x/y each tilt 30° off horizontal in opposite directions,
+  z moves straight up the screen, scaled against the *computed* z-range
+  the same way the 2D curve auto-scales its y-axis), with the projected
+  footprint auto-fit/centered into the viewport from its own bounding
+  box. A grid point that can't be evaluated (or evaluates to a
+  non-finite number, e.g. a genuine 3D asymptote like `1/(x-y)` on the
+  x=y diagonal) leaves a gap in the mesh lines through it rather than a
+  spurious connection, checked per mesh segment in both the row and
+  column directions.
+  - Verified with a throwaway Node script
+    (`detectGraphMode`/`renderGraph3D` copied verbatim out of
+    `src/notebook.html`, with minimal `document`/`svg` stubs standing in
+    for the DOM): a 2D-only expression (`x^2`) stays 2D; `x+y` with no
+    prior `y` definition switches to 3D; `x+y` with an earlier `y:=5`
+    line stays 2D and actually uses `y=5`; `y` left entirely unused
+    (`sqrt(x)`) stays 2D; a defined single-variable function call (`f(x)`)
+    stays 2D; a real paraboloid (`x^2+y^2`, every grid point finite)
+    draws exactly the expected 2×15=30 unbroken mesh polylines; a genuine
+    3D asymptote (`1/(x-y)`) breaks mesh lines at the x=y diagonal
+    without throwing, into more than 30 polylines, none degenerate; and
+    an expression where *every* grid point fails (`x+y+z`, `z` never
+    defined) renders nothing without crashing. 43/43 assertions passed.
+  - Verified live in the running app: typing `@x^2+y^2` renders a
+    correctly-labeled (`z =`) wireframe paraboloid (bowl-shaped mesh,
+    both grid directions visible). Re-ran the existing 2D cases
+    afterward as a regression check — `@x^2` still plots the same
+    parabola and `@1/x` still breaks into two branches at the asymptote,
+    both unchanged. Separately confirmed live: `y:=5` on one line then
+    `@x+y` on the next stays a 2D straight line (`y =` label) using the
+    defined value (renders as `y=x+5`, matching the earlier Node check);
+    and backspacing an empty graph line placed immediately after an
+    existing graph line still correctly lands focus back in that
+    previous line (the `focusLine()` "graph" case from the original
+    feature still covers this; no regression there from adding 3D mode).
+
+- **Greek letters (`Ctrl+<letter>`/`Ctrl+Shift+<letter>`)** — inserts a
+  lowercase/uppercase Greek glyph into whatever math field, graph
+  expression, or matrix cell has focus (see README's "Greek letters"
+  table for the full mapping), usable as a real variable name, function
+  name, or function parameter, not just a typed symbol.
+  - `src/notebook.html`: `evaluateLatex()`'s identifier model (previously
+    "one Latin letter, full stop") is generalized by `matchIdentifierAt()`
+    to also accept one Greek command token (`\beta`, `\Gamma`, ...);
+    `parseAtom`'s variable/function-call branch and the implicit-
+    multiplication lookahead in `parseTerm` both go through it now.
+    `collectDefinitions()`'s variable/function-definition matching was
+    rewritten from two regexes to hand-rolled parsing (`parseDefinitionLHS()`
+    + the same `matchIdentifierAt()`) — a regex alternation built from a
+    dynamic list of Greek command strings needs the backslash
+    double-escaped to work as `RegExp` source, and the project's own style
+    already favors hand-rolled parsing (`eat`/`peek`) over that kind of
+    regex gymnastics.
+  - **Deviation from the originally-sketched mapping**: dropped the
+    planned `Ctrl+Shift+S`→Σ and `Ctrl+Shift+P`→Π (2 of the original 11
+    uppercase slots). Reason, found while implementing rather than
+    assumed up front: `\Sigma`/`\Pi` already mean something specific to
+    `parseAtom` (the summation/product prefix — see the `$`/`#` feature
+    below) checked unconditionally before anything looks at whether it's
+    a defined variable. Keeping the mapping as planned would've made
+    `\Sigma:=5` followed by `\Sigma+1` silently evaluate as "reduce `+1`
+    over nothing" (`= 1`) instead of `6` — a wrong-answer bug, not a
+    cosmetic one, since both readings parse successfully. Σ/Π already
+    have working, Mathcad-faithful shortcuts for their one existing
+    meaning; every other letter in the original mapping is unaffected.
+  - **Also investigated and deliberately did *not* do**: the task
+    description raised extending MathQuill's `autoOperatorNames` (via
+    `MQ.config()`) to cover `sech`/`csch`/inverse-sec-csc-cot/inverse-
+    hyperbolic names, on the assumption the shipped `mathquill.min.js`'s
+    default list was missing them. Checked empirically instead of
+    assumed: typed each name into a throwaway `MathField` in a headless
+    Chromium (`chromium --headless=new --dump-dom`) running the exact
+    `mathquill.min.js` in this repo, and read back `.latex()`. Every one
+    of them is already auto-unitalicized out of the box (rendered via
+    `\operatorname{sech}` etc. rather than a native `\sech`, but still
+    upright, not italic) — MathQuill's own startup code expands its
+    hardcoded `sin cos tan sec cosec csc cotan cot ctg` list into every
+    arc-/h-/ar- combination at load time, which isn't visible just
+    reading the literal strings in the minified source. Calling
+    `MQ.config()` wouldn't have extended that table either way — its
+    setter *replaces* the whole table with only the names given — so
+    doing it would have risked silently breaking unrelated existing names
+    (`gcf`, `hcf`, `proj`, `Pr`, ...) for zero benefit. No `MQ.config()`
+    call was made; see the comment above `var MQ` in `src/notebook.html`.
+  - Verified with a standalone Node script (pure evaluator functions
+    copied verbatim out of `src/notebook.html`, same pattern as every
+    prior feature here): `\beta:=5` then `\beta+1` → `6`; a Greek function
+    parameter (`f(\beta):=\beta^2`, `f(4)` → `16`); a Greek function name
+    with mixed Greek/Latin params; implicit multiplication by a Greek
+    identifier (`2\beta`, `\beta\gamma`); `\alpha` (deliberately unmapped)
+    and `\Sigma`/`\Pi` (deliberately excluded) both confirmed NOT
+    recognized as identifiers, with `\Sigma i^2` over a range still
+    working as the sum operator; regression-checked a plain single-letter
+    variable and function definition still work unchanged. 47/47
+    assertions passed (shared with the built-in-functions feature below,
+    same test file).
+  - Verified live in the running app: `Ctrl+B` on a math field inserts
+    `β`; `β:=5` on one line then `Ctrl+B` again on the next, `+1=`, gives
+    `β+1=6`; `Ctrl+G` and `Ctrl+Shift+D` inside a 2-cell matrix render
+    `[γ  Δ]`; `Ctrl+Shift+S` followed by typing `test` produces the plain
+    word "test" (confirming Σ was correctly *not* inserted); the `$`
+    sum-over-range shortcut (`Σk² = 14` over `k:=0…3`) still works
+    unchanged. Also confirmed the Greek-letter shortcut only fires inside
+    an actual math/graph/matrix-cell field — on a brand-new pending line
+    it's a no-op (by design, matching this item's own scope — a pending
+    line has no MathQuill field yet to insert into).
+
+- **Built-in named functions (`sin cos tan ...`, no definition needed)**
+  — `sin cos tan sec csc cot` and their inverses (`arcsin arccos arctan
+  arcsec arccsc arccot`), the hyperbolic versions (`sinh cosh tanh sech
+  csch coth`) and their inverses (`arcsinh arccosh arctanh arcsech
+  arccsch arccoth`), plus `ln` (natural log → `Math.log`), `log` (base 10
+  → `Math.log10`), and `exp`, all evaluate directly — no `name:=...`
+  definition line needed first, unlike every other function this app
+  supports. MathQuill already renders every one of these upright the
+  moment it's typed (confirmed empirically, see the Greek-letters entry
+  above for why no `autoOperatorNames` change was needed).
+  - `src/notebook.html`: two new lookup tables in `evaluateLatex()` —
+    `NATIVE_BUILTINS` (`[latex command, JS function]` pairs, e.g.
+    `["\sinh", Math.sinh]`, checked by exact command string) and
+    `WRAPPED_BUILTINS` (`name -> JS function`, checked by the name inside
+    a literal `\operatorname{...}`) — cover the two different ways
+    MathQuill actually renders a recognized name (confirmed by the same
+    headless-Chromium probe as above: `\sin\left(2\right)` for natively-
+    LaTeX names, `\operatorname{sech}\left(2\right)` for the rest).
+    `parseAtom` tries both tables (and `\operatorname{` unwrapping) before
+    the generic identifier branch; `parseTerm`'s implicit-multiplication
+    lookahead was extended the same way (plus `\operatorname{` and the
+    Greek-command check above) so `2\sin\left(x\right)` parses correctly.
+    `NATIVE_BUILTINS` is ordered longest-name-first within any group that
+    shares a prefix (`sinh` before `sin`, `cosh` before `cos`, etc.) so
+    greedy matching doesn't swallow `sinh(` as `sin` plus a dangling `h`.
+    Every call goes through a shared `callBuiltin()` helper that in turn
+    uses `broadcastUnary()`, so range broadcasting (and everything else
+    that already works for `\sqrt`/`\frac`) works for these too, free.
+    Inverse sec/csc/cot use the standard reciprocal identities
+    (`arcsec(x) = acos(1/x)`, etc.).
+  - **Deliberately not supported**: the shorter `a`-prefixed spelling
+    some calculators use instead of `arc...` (`asin`, `asinh`, ...).
+    Checked empirically (same headless-Chromium probe): MathQuill never
+    auto-recognizes `asin` as one token at all — typing it live actually
+    produces a separate italic variable `a` immediately followed by a
+    recognized `\sin`, i.e. `a\sin\left(...\right)`, meaning "a times
+    sin(...)" — an already-meaningful, different expression. Special-
+    casing the evaluator to reinterpret that specific token sequence as
+    arcsine would silently break the legitimate case where `a` is an
+    actual defined variable.
+  - Verified with the same standalone Node script as the Greek-letters
+    feature above (47/47 total assertions): every named function on a
+    plain scalar (`sin(0)=0`, `coth(1)`, `ln(1)=0`, `log(100)=2`,
+    `exp(0)=1`, ...); broadcasting over a range variable (`sin(i)` and
+    `ln(i)` over `i:=0…3`/`1…3`, and the `\operatorname{}`-wrapped
+    `sech(i)`); inverse round-trips (`arcsin(sin(0.5))`,
+    `arcsinh(sinh(0.5))`, `arcsec(sec(0.5))`, `arccot(cot(0.5))`,
+    `arccsch(csch(0.5))`, `arccoth(coth(0.5))`, all ≈ `0.5`); the
+    `sinh`/`sin` (and `cosh`/`cos`, `tanh`/`tan`, `coth`/`cot`) prefix
+    case specifically, to catch the greedy-matching bug the ordering
+    above exists to prevent; implicit multiplication by a builtin call
+    (`2\cos(0)=2`); and the `a\sin(0)` "not arcsine" case from both
+    directions (throws when `a` is undefined, evaluates as `a*sin(0)`
+    when it's defined).
+  - Verified live in the running app: `sin(0)=0` and `ln(1)=0`, both
+    rendering the upright native `sin`/`ln` (unchanged from before this
+    feature); `sin(k)` over a range `k:=0…3` gives
+    `0, 0.841471, 0.909297, 0.14112`; `sech(0)=1`, rendering upright via
+    `\operatorname{sech}` (confirming no `autoOperatorNames` regression);
+    `arcsin(sin(0.5))=0.5`; and a `@sin(x)` graph (same "y=" expression
+    field the existing graphing feature uses, which calls `evaluateLatex()`
+    unchanged) plots a correct, unbroken sine curve — a regression check
+    that the builtin-function plumbing didn't disturb graphing.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
@@ -216,3 +401,33 @@ below was verified by building (`bin/build`), running the backend tests
   Ran the compiled binary under Wayland/Hyprland, drove it with `wtype`
   for headings, variables, nth-root evaluation, and a 2×2 matrix;
   screenshotted each with `grim` and confirmed correct rendering.
+- 2026-11-17: 3D surface plotting added to the existing `@` graph line.
+  `bin/build`/`bin/test` both clean (7/7). A standalone Node script
+  (functions copied verbatim out of `src/notebook.html`) passed 43/43
+  assertions on the 2D/3D detection rule and the 3D grid/projection/gap
+  logic. Live in the running app: `@x^2+y^2` renders a correctly
+  z-labeled wireframe paraboloid; the original `@x^2` and `@1/x` 2D
+  cases, and the already-fixed empty-graph-line backspace/focus
+  behavior, all re-verified unchanged; `y:=5` then `@x+y` confirmed to
+  stay 2D and plot `y=x+5`.
+- 2026-11-17: Greek letters (`Ctrl+<letter>`/`Ctrl+Shift+<letter>`) and
+  built-in named functions (`sin`/`cos`/.../`ln`/`log`/`exp`, inverse and
+  hyperbolic forms). `bin/build`/`bin/test` both clean (7/7). A standalone
+  Node script (pure evaluator functions copied verbatim out of
+  `src/notebook.html`) passed 47/47 assertions covering both features
+  together (variable/function definitions and lookups, implicit
+  multiplication, range broadcasting, inverse round-trips, the deliberate
+  `\Sigma`/`\Pi`/`asin`-style omissions, and a regression check of the
+  pre-existing single-Latin-letter path). Also used a headless Chromium
+  (`chromium --headless=new --dump-dom`) running the actual
+  `mathquill.min.js` shipped in this repo to confirm, empirically rather
+  than by reading the minified source, exactly how MathQuill renders each
+  built-in name and each Greek `.cmd()` call — this is what caught that no
+  `autoOperatorNames` change was actually needed (see the entries above).
+  Live in the running app: `Ctrl+B` inserts `β`; `β:=5` then `β+1=6` on
+  the next line; `Ctrl+G`/`Ctrl+Shift+D` in a matrix cell render `[γ  Δ]`;
+  `Ctrl+Shift+S` confirmed to NOT insert Σ; `sin(0)=0`, `ln(1)=0`,
+  `sech(0)=1` (upright via `\operatorname{}`), `sin(k)` broadcasting over
+  a range, and `arcsin(sin(0.5))=0.5`; `@sin(x)` plots an unbroken sine
+  curve as a graphing regression check; the pre-existing `$i^2=` sum
+  shortcut re-verified unchanged.

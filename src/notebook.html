@@ -138,6 +138,15 @@
     stroke: currentColor;
     stroke-width: 2;
   }
+  /* A 3D surface's wireframe mesh (see renderGraph3D()) — thinner and
+     lighter than the 2D curve since a 15x15 grid draws 30 lines, not
+     one; at full weight that reads as noise rather than a surface. */
+  .graph-mesh {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1;
+    stroke-opacity: 0.55;
+  }
   /* MathQuill's own field chrome (border/shadow, defaults to a light
      theme) is replaced here to blend into the current background/ink,
      dark or paper. */
@@ -171,6 +180,27 @@
     // DOM in sync, so `lines[i]` and the i-th child of #notebook always
     // refer to the same line.
     var MQ = MathQuill.getInterface(2);
+    // No MQ.config({autoOperatorNames: ...}) call here, despite what it
+    // might look like this project needs for "sech", "csch", every
+    // inverse of sec/csc/cot, and every inverse hyperbolic form: checked
+    // empirically (typed each name into a throwaway MathField and read
+    // back .latex()) against the exact mathquill.min.js shipped in this
+    // repo, and every one of them is *already* auto-unitalicized out of
+    // the box — just rendered as "\operatorname{sech}" etc. (operatorname-
+    // wrapped) rather than a native "\sech" command, because MathQuill's
+    // own startup code expands its hardcoded "sin cos tan sec cosec csc
+    // cotan cot ctg" list into every arc-/h-/ar- combination at load time,
+    // not just the handful of literal strings visible in the minified
+    // source. Calling MQ.config({autoOperatorNames: "..."}) would not
+    // extend that table — the setter it installs *replaces* the whole
+    // table with only the names in the given string — so doing it here
+    // with anything short of a byte-perfect reconstruction of that
+    // generated list would silently regress names this file never even
+    // touches (gcf, hcf, lcm, proj, span, Pr, injlim, ...). Since nothing
+    // is actually missing, the safest move is no MQ.config call at all;
+    // see evaluateLatex()'s NATIVE_BUILTINS/WRAPPED_BUILTINS below for
+    // which of the two rendering forms each supported name actually comes
+    // through as.
     var notebook = document.getElementById("notebook");
     var lines = [];
 
@@ -300,28 +330,161 @@
       return value.reduce(combine);
     }
 
+    // Ctrl+<letter> (lowercase) / Ctrl+Shift+<letter> (uppercase) insert a
+    // Greek letter into the focused math/graph/matrix-cell field — see the
+    // global keydown listener far below. Mathcad/Mathcad-notebook
+    // convention; the mapping itself is a product decision (which letter
+    // keys which Greek glyph) made up front, not derived here — see
+    // TODO.md's "Design notes" for the full reasoning, including why
+    // "a"/"c"/"v"/"x" (clipboard) and plain "s"/"q"/"l" (this app's own
+    // export/quit/paper shortcuts, just below) never get a Greek mapping.
+    //
+    // Deviation from that design note: the uppercase map below *omits*
+    // s→Σ and p→Π, which the original mapping included. Reason: \Sigma and
+    // \Pi aren't just glyphs to this evaluator — parseAtom (below) already
+    // treats a *leading* "\Sigma"/"\Pi" as Mathcad's Σ/Π reduction-operator
+    // prefix (see insertChar()'s "$"/"#" handling), unconditionally, before
+    // it ever considers "is this plain identifier defined as a variable?".
+    // Letting Ctrl+Shift+S/P insert the exact same two tokens for an
+    // *unrelated* purpose (a plain variable name) would mean something
+    // like "\Sigma:=5" followed by "\Sigma+1" silently evaluates the
+    // second line as "reduce +1 over nothing" (= 1) instead of "5+1" — a
+    // silent wrong-answer bug, not a cosmetic one, since both meanings
+    // parse successfully, just to different numbers. Σ and Π already have
+    // working, Mathcad-faithful shortcuts for their one existing meaning
+    // ($ and #); giving them a second, incompatible meaning on top of that
+    // is the actual mistake here, not a cost worth tolerating for 2 of the
+    // 11 uppercase slots. Every other uppercase/lowercase mapping is free
+    // of this problem (no other Greek command string this feature can
+    // insert collides with any other token parseAtom treats specially).
+    var GREEK_LOWER = {
+      b: "\\beta", d: "\\delta", e: "\\epsilon", f: "\\phi", g: "\\gamma", h: "\\eta", i: "\\iota", j: "\\xi",
+      k: "\\kappa", m: "\\mu", n: "\\nu", o: "\\omega", p: "\\pi", r: "\\rho", t: "\\tau", u: "\\upsilon",
+      w: "\\chi", y: "\\psi", z: "\\zeta"
+    };
+    var GREEK_UPPER = {
+      g: "\\Gamma", d: "\\Delta", q: "\\Theta", l: "\\Lambda", j: "\\Xi", u: "\\Upsilon", f: "\\Phi", y: "\\Psi", o: "\\Omega"
+    };
+    // The flat set of every Greek command token either map above can
+    // produce, used by the evaluator (matchIdentifierAt(), just below) to
+    // recognize one as a valid identifier — a variable name, a function
+    // name, or a function parameter — on equal footing with a single
+    // Latin letter. None of these 28 strings is a prefix of another (each
+    // is a distinct, common Greek letter name), so matching order below
+    // never matters.
+    var GREEK_COMMANDS = (function () {
+      var seen = {}, list = [];
+      function add(map) { for (var k in map) if (!seen[map[k]]) { seen[map[k]] = true; list.push(map[k]); } }
+      add(GREEK_LOWER);
+      add(GREEK_UPPER);
+      return list;
+    })();
+
+    // An identifier token, generalized beyond "one Latin letter" to also
+    // accept one Greek command token (see GREEK_COMMANDS above) — this is
+    // the one place both evaluateLatex() (an expression's own variables/
+    // function calls) and collectDefinitions() (a definition line's own
+    // name, and a function definition's parameter names) decide what
+    // counts as a name. Returns the matched token (its full text, e.g.
+    // "\beta" or "x") or null if nothing recognizable starts at `pos`;
+    // never partially consumes a Greek command (either the whole token
+    // matches or none of it does).
+    function matchIdentifierAt(str, pos) {
+      for (var i = 0; i < GREEK_COMMANDS.length; i++) {
+        if (str.startsWith(GREEK_COMMANDS[i], pos)) return GREEK_COMMANDS[i];
+      }
+      if (pos < str.length && /[a-zA-Z]/.test(str[pos])) return str[pos];
+      return null;
+    }
+
+    // Built-in named functions (sin, cos, ..., ln, log, exp, and their
+    // less common relatives) that evaluateLatex() recognizes without
+    // needing a "name:=..." definition line first — unlike a user-defined
+    // function (single identifier token only), these are multi-letter
+    // Latin names, typed and auto-recognized live by MathQuill's own
+    // autoOperatorNames machinery (see the comment above `var MQ` for why
+    // that table needs no changes here). MathQuill renders a recognized
+    // name one of two ways depending on whether it's "built in" to actual
+    // LaTeX (\sin, \ln, ...) or one of the extra names MathQuill generates
+    // at load time (\operatorname{sech}, \operatorname{arcsinh}, ...) —
+    // confirmed by actually typing each one into a throwaway MathField and
+    // reading back .latex(), not assumed from the minified source. Each
+    // table below matches the one rendering form that name actually comes
+    // through as:
+    //   - NATIVE_BUILTINS: [latex command, JS function] pairs, checked by
+    //     the exact command string (e.g. "\sinh"). Ordered longest-name
+    //     first within any group that shares a prefix (sinh before sin,
+    //     cosh before cos, tanh before tan, coth before cot) so greedy
+    //     matching doesn't swallow "sinh(" as "sin" + a dangling "h".
+    //   - WRAPPED_BUILTINS: name (no braces) -> JS function, checked by
+    //     exact name after unwrapping a literal "\operatorname{...}" —
+    //     no prefix-ordering concern here since the braces are an
+    //     unambiguous delimiter, not a greedy character match.
+    // Inverse secant/cosecant/cotangent use the standard 1/x reciprocal
+    // identities (e.g. arcsec(x) = acos(1/x)) rather than a from-scratch
+    // implementation; sec/csc/cot likewise via 1/cos, 1/sin, 1/tan.
+    var NATIVE_BUILTINS = [
+      ["\\sinh", Math.sinh], ["\\cosh", Math.cosh], ["\\tanh", Math.tanh],
+      ["\\coth", function (x) { return 1 / Math.tanh(x); }],
+      ["\\arcsin", Math.asin], ["\\arccos", Math.acos], ["\\arctan", Math.atan],
+      ["\\sin", Math.sin], ["\\cos", Math.cos], ["\\tan", Math.tan],
+      ["\\sec", function (x) { return 1 / Math.cos(x); }],
+      ["\\csc", function (x) { return 1 / Math.sin(x); }],
+      ["\\cot", function (x) { return 1 / Math.tan(x); }],
+      ["\\ln", Math.log], ["\\log", Math.log10], ["\\exp", Math.exp]
+    ];
+    var WRAPPED_BUILTINS = {
+      sech: function (x) { return 1 / Math.cosh(x); },
+      csch: function (x) { return 1 / Math.sinh(x); },
+      arcsec: function (x) { return Math.acos(1 / x); },
+      arccsc: function (x) { return Math.asin(1 / x); },
+      arccot: function (x) { return Math.atan(1 / x); },
+      arcsinh: Math.asinh,
+      arccosh: Math.acosh,
+      arctanh: Math.atanh,
+      arcsech: function (x) { return Math.acosh(1 / x); },
+      arccsch: function (x) { return Math.asinh(1 / x); },
+      arccoth: function (x) { return Math.atanh(1 / x); }
+    };
+    // Note on "asin"/"acos"/.../"asech"/... (the shorter a-prefixed
+    // spelling some calculators use instead of "arc..."): deliberately
+    // NOT supported, in either table above. Checked empirically the same
+    // way as everything else here — MathQuill never auto-recognizes
+    // "asin" etc. as a single token at all (its generated name list only
+    // ever adds "arc"/"ar"-prefixed forms, never a bare "a"-prefixed one),
+    // so typing "asin(" actually produces a separate italic variable "a"
+    // immediately followed by a recognized "\sin" — i.e. "a*sin(...)", a
+    // completely different, already-meaningful expression. Special-casing
+    // the evaluator to reinterpret that specific token sequence as
+    // arcsine would silently break the (rarer, but entirely legitimate)
+    // case where "a" is actually a defined variable someone meant to
+    // multiply by sin(...).
+
     // A tiny LaTeX evaluator: just enough of the grammar MathQuill produces
-    // (numbers, single-letter variables, +-, implicit/explicit *, /, \frac,
-    // \sqrt, \sqrt[n]{}, ^, parens, function calls (one or more
-    // single-letter parameters), and range-variable broadcasting via the
-    // above) to turn what's on a line
+    // (numbers, variables — a single Latin letter or a Greek command token,
+    // see matchIdentifierAt() above — +-, implicit/explicit *, /, \frac,
+    // \sqrt, \sqrt[n]{}, ^, parens, function calls (user-defined, one or
+    // more identifier-token parameters, or one of the built-in names in
+    // NATIVE_BUILTINS/WRAPPED_BUILTINS above), and range-variable
+    // broadcasting via the above) to turn what's on a line
     // into a number (or, if a range variable is involved, an array of
     // them). It's a standard recursive-descent parser, structured by
     // operator precedence from loosest to tightest binding: parseExpr
-    // (+ -) calls parseTerm (* /, including two letters next to each other
-    // meaning multiply) calls parsePow (^) calls parseUnary (leading - or
-    // +) calls parseAtom (numbers, variables, \sqrt, \frac, parens,
+    // (+ -) calls parseTerm (* /, including two identifiers next to each
+    // other meaning multiply) calls parsePow (^) calls parseUnary (leading
+    // - or +) calls parseAtom (numbers, variables, \sqrt, \frac, parens,
     // function calls — the actual "things" the operators above combine).
     // Throws on anything it can't parse or on an undefined variable;
     // callers are expected to catch that and treat it as "can't evaluate
     // yet" rather than a hard error.
-    // `funcs` maps a single-letter function name to {params, body} (one or
-    // more single-letter parameters), as collected by collectDefinitions()
-    // below; a function call evaluates its body (itself a nested
-    // evaluateLatex() call, so a function can use \sqrt/\frac/further
-    // calls in its own definition) with each of `params` bound to the
-    // matching argument and every other variable carried over unchanged.
-    // Any argument can itself be a range, same as any operator.
+    // `funcs` maps a user-defined function's identifier-token name to
+    // {params, body} (one or more identifier-token parameters), as
+    // collected by collectDefinitions() below; a function call evaluates
+    // its body (itself a nested evaluateLatex() call, so a function can
+    // use \sqrt/\frac/further calls in its own definition) with each of
+    // `params` bound to the matching argument and every other variable
+    // carried over unchanged. Any argument can itself be a range, same as
+    // any operator.
     function evaluateLatex(latex, vars, funcs) {
       // `src`/`pos` are this call's cursor into the LaTeX string; evalSub()
       // below temporarily repoints them at a nested group's text (a \frac's
@@ -402,14 +565,15 @@
       }
       // Multiplication and division, including MathQuill's \cdot/\times
       // and a bare "*", plus implicit multiplication: if the next thing
-      // looks like the start of another atom (a digit, letter, open paren,
-      // or one of the backslash commands parseAtom actually understands)
-      // with no operator in between, that's "2x" or "xy" style
+      // looks like the start of another atom (a digit, letter, Greek
+      // command, open paren, a built-in function name, or one of the
+      // other backslash commands parseAtom actually understands) with no
+      // operator in between, that's "2x", "xy", or "2\sin(x)" style
       // juxtaposition, so multiply by it anyway. This deliberately doesn't
-      // match every backslash — just \sqrt/\frac/\left(, the ones parseAtom
-      // can start an atom with — so it doesn't mistake a \right) (or any
-      // other command) that's closing an *enclosing* group for the start
-      // of a new factor.
+      // match every backslash — just the specific commands parseAtom can
+      // actually start an atom with — so it doesn't mistake a \right) (or
+      // any other command) that's closing an *enclosing* group for the
+      // start of a new factor.
       function parseTerm() {
         var v = parsePow();
         for (;;) {
@@ -419,12 +583,26 @@
             skipWs();
             var c = peek();
             var atomAhead = (c && /[0-9a-zA-Z(]/.test(c)) ||
-              src.startsWith("\\sqrt", pos) || src.startsWith("\\frac", pos) || src.startsWith("\\left(", pos);
+              src.startsWith("\\sqrt", pos) || src.startsWith("\\frac", pos) || src.startsWith("\\left(", pos) ||
+              src.startsWith("\\operatorname{", pos) ||
+              matchIdentifierAt(src, pos) !== null ||
+              NATIVE_BUILTINS.some(function (b) { return src.startsWith(b[0], pos); });
             if (atomAhead) v = broadcast(v, parsePow(), function (x, y) { return x * y; });
             else break;
           }
         }
         return v;
+      }
+      // Evaluates a single-argument built-in call: a "(" or "\left(",
+      // one expression, then the matching close — shared by every entry
+      // in NATIVE_BUILTINS/WRAPPED_BUILTINS above (all unary), the same
+      // way broadcastUnary() is shared by every unary operator.
+      function callBuiltin(fn) {
+        var usesLeft = eat("\\left(");
+        if (!usesLeft && !eat("(")) throw new Error("expected ( after function name");
+        var arg = parseExpr();
+        if (usesLeft) eat("\\right)"); else eat(")");
+        return broadcastUnary(arg, fn);
       }
       // Exponentiation: "^" followed by either a braced group (as
       // MathQuill writes a multi-character exponent) or a single atom.
@@ -486,18 +664,42 @@
         }
         var m = /^[0-9]+(\.[0-9]+)?/.exec(src.slice(pos));
         if (m) { pos += m[0].length; return parseFloat(m[0]); }
-        var c = peek();
-        if (c && /[a-zA-Z]/.test(c)) {
-          pos++;
-          // A letter immediately followed by an opening paren is a
+        // Built-in named functions (sin, cos, ..., ln, log, exp, ... —
+        // see NATIVE_BUILTINS/WRAPPED_BUILTINS above) are tried before the
+        // generic identifier case below: they need greedy, multi-character
+        // matching ("sinh" before a lone "sin" leaves a dangling "h" — see
+        // NATIVE_BUILTINS' own comment on ordering), which has to happen
+        // first. There's no real precedence question with a user-defined
+        // name here, just a structural one: this grammar only ever lets a
+        // definition's own name be a *single* identifier token (one Latin
+        // letter, or one Greek command — see matchIdentifierAt()), so
+        // nothing a user can actually define could collide with a
+        // multi-letter built-in name like "sin" to begin with.
+        for (var bi = 0; bi < NATIVE_BUILTINS.length; bi++) {
+          if (eat(NATIVE_BUILTINS[bi][0])) return callBuiltin(NATIVE_BUILTINS[bi][1]);
+        }
+        if (eat("\\operatorname{")) {
+          var opEnd = src.indexOf("}", pos);
+          if (opEnd === -1) throw new Error("unterminated \\operatorname{");
+          var opName = src.slice(pos, opEnd);
+          if (!WRAPPED_BUILTINS.hasOwnProperty(opName)) throw new Error("unknown function " + opName);
+          pos = opEnd + 1;
+          return callBuiltin(WRAPPED_BUILTINS[opName]);
+        }
+        // A variable (a single Latin letter or a Greek command token —
+        // see matchIdentifierAt()) or a user-defined function call.
+        var ident = matchIdentifierAt(src, pos);
+        if (ident !== null) {
+          pos += ident.length;
+          // An identifier immediately followed by an opening paren is a
           // function call only if it's a known function name — otherwise
           // (e.g. "2x(3+1)") it falls through to the plain-variable case
           // below and the parens are left for parseTerm's implicit
           // multiplication to pick up, same as any other juxtaposition.
-          if (funcs && (c in funcs)) {
+          if (funcs && (ident in funcs)) {
             var usesLeft = eat("\\left(");
             if (usesLeft || eat("(")) {
-              var fn = funcs[c];
+              var fn = funcs[ident];
               // One argument per comma, same comma MathQuill already types
               // literally (no override needed, the same way a matrix's
               // commas are only special inside a matrix cell).
@@ -505,7 +707,7 @@
               while (eat(",")) args.push(parseExpr());
               if (usesLeft) eat("\\right)"); else eat(")");
               if (args.length !== fn.params.length) {
-                throw new Error(c + " takes " + fn.params.length + " argument(s), got " + args.length);
+                throw new Error(ident + " takes " + fn.params.length + " argument(s), got " + args.length);
               }
               var callVars = {};
               for (var k in vars) callVars[k] = vars[k];
@@ -513,8 +715,8 @@
               return evaluateLatex(fn.body, callVars, funcs);
             }
           }
-          if (!(c in vars)) throw new Error("undefined variable " + c);
-          return vars[c];
+          if (!(ident in vars)) throw new Error("undefined variable " + ident);
+          return vars[ident];
         }
         throw new Error("unexpected token at " + pos + " in " + src);
       }
@@ -567,23 +769,39 @@
       return values;
     }
 
-    // Builds {letter: value} and {letter: {params, body}} from every
-    // earlier "x:=expr", "f(x):=expr" / "f(x,y,...):=expr", and
-    // "i:=start..end" line (respectively), in document order, so a later
-    // line can reference anything defined above it. Each definition is
-    // evaluated using the variables/functions collected so far, so
-    // "b:=a+1" after "a:=2" works, and so does "b:=f(2)" after
-    // "f(x):=x+1"; a definition that fails to evaluate (bad syntax, or
-    // referencing something not yet defined) is just skipped, leaving that
-    // letter undefined for anything below it. A function's own body isn't
-    // evaluated here — it can't be, without arguments — just stored for
-    // evaluateLatex()'s parseAtom to evaluate lazily on each call (one
-    // param is the single-letter-function case this started as; more than
-    // one, e.g. "f(x,y):=\sqrt{x^2+y^2}", works the same way, just with
-    // more names to bind). A range variable's array, unlike a function's
-    // body, IS fully evaluated here (parseRangeDefinition() needs concrete
-    // start/end/step numbers to build it), the same as a plain scalar
-    // definition.
+    // Builds {name: value} and {name: {params, body}} from every earlier
+    // "x:=expr", "f(x):=expr" / "f(x,y,...):=expr", and "i:=start..end"
+    // line (respectively), in document order, so a later line can
+    // reference anything defined above it. `name` and each parameter is
+    // one identifier token — a single Latin letter or a single Greek
+    // command, per matchIdentifierAt() above, same as everywhere else in
+    // the evaluator. Each definition is evaluated using the variables/
+    // functions collected so far, so "b:=a+1" after "a:=2" works, and so
+    // does "b:=f(2)" after "f(x):=x+1"; a definition that fails to
+    // evaluate (bad syntax, or referencing something not yet defined) is
+    // just skipped, leaving that name undefined for anything below it. A
+    // function's own body isn't evaluated here — it can't be, without
+    // arguments — just stored for evaluateLatex()'s parseAtom to evaluate
+    // lazily on each call (one param is the original single-letter-
+    // function case; more than one, e.g. "f(x,y):=\sqrt{x^2+y^2}", works
+    // the same way, just with more names to bind). A range variable's
+    // array, unlike a function's body, IS fully evaluated here
+    // (parseRangeDefinition() needs concrete start/end/step numbers to
+    // build it), the same as a plain scalar definition.
+    //
+    // Parses the left-hand side of a definition line by hand (matching
+    // this file's general style of hand-rolled parsing over regexes, and
+    // sidestepping the escaping headache of splicing a dynamically-built
+    // Greek-command alternation into a RegExp source string) rather than
+    // the single `^([a-zA-Z]):=...` / function-def regex this used before
+    // Greek identifiers existed. Returns null (so the caller just skips
+    // the line, same as a regex that fails to match) for anything that
+    // doesn't start with a recognizable identifier token at all.
+    function parseDefinitionLHS(latex) {
+      var name = matchIdentifierAt(latex, 0);
+      if (name === null) return null;
+      return { name: name, rest: latex.slice(name.length) };
+    }
     function collectDefinitions(line) {
       var vars = {}, funcs = {};
       var stop = indexOf(line);
@@ -591,13 +809,42 @@
         var l = lines[k];
         if (l.type !== "math") continue;
         var latex = l.mathField.latex();
-        var fm = /^([a-zA-Z])\\left\(([a-zA-Z](?:,[a-zA-Z])*)\\right\):=(.+)$/.exec(latex);
-        if (fm) { funcs[fm[1]] = { params: fm[2].split(","), body: fm[3] }; continue; }
-        var m = /^([a-zA-Z]):=(.+)$/.exec(latex);
-        if (!m) continue;
+        var lhs = parseDefinitionLHS(latex);
+        if (!lhs) continue;
+        var afterName = lhs.rest;
+        // A function definition: the name is immediately followed by a
+        // parenthesized, comma-separated list of one-or-more identifier
+        // tokens, then ":=". Anything that doesn't fit this shape exactly
+        // (no "(" at all, a malformed parameter list, no matching close,
+        // or no ":=" right after it) just falls through to the plain-
+        // variable check below, the same as the old regex failing to
+        // match and moving on.
+        var usesLeft = afterName.indexOf("\\left(") === 0;
+        if (usesLeft || afterName[0] === "(") {
+          var afterParen = afterName.slice(usesLeft ? 6 : 1);
+          var params = [], ok = true;
+          for (;;) {
+            var p = matchIdentifierAt(afterParen, 0);
+            if (p === null) { ok = false; break; }
+            params.push(p);
+            afterParen = afterParen.slice(p.length);
+            if (afterParen[0] === ",") { afterParen = afterParen.slice(1); continue; }
+            break;
+          }
+          var closeLit = usesLeft ? "\\right)" : ")";
+          if (ok && afterParen.indexOf(closeLit) === 0) {
+            var afterClose = afterParen.slice(closeLit.length);
+            if (afterClose.indexOf(":=") === 0) {
+              funcs[lhs.name] = { params: params, body: afterClose.slice(2) };
+              continue;
+            }
+          }
+        }
+        if (afterName.indexOf(":=") !== 0) continue;
+        var rhs = afterName.slice(2);
         try {
-          var range = parseRangeDefinition(m[2], vars, funcs);
-          vars[m[1]] = range !== null ? range : evaluateLatex(m[2], vars, funcs);
+          var range = parseRangeDefinition(rhs, vars, funcs);
+          vars[lhs.name] = range !== null ? range : evaluateLatex(rhs, vars, funcs);
         } catch (e) { /* skip bad/circular defs */ }
       }
       return { vars: vars, funcs: funcs };
@@ -881,6 +1128,14 @@
     //, say, 10x as many.
     var GRAPH_DOMAIN = 10;
     var GRAPH_SAMPLES = 200;
+    // A 3D surface samples a GRAPH3D_SAMPLES x GRAPH3D_SAMPLES grid over
+    // the same domain on both axes, evaluating the expression once per
+    // grid point (225 at the default, vs. 201 for a 2D curve) on every
+    // keystroke. Far fewer samples per axis than the 2D case: a wireframe
+    // mesh gets visually denser, not more accurate, as you add lines —
+    // past about 15-20 per axis it just reads as noise — and it's an N^2
+    // cost instead of 2D's N, so keeping it modest matters more here.
+    var GRAPH3D_SAMPLES = 15;
 
     // Draws one straight-line SVG <line> element — the building block
     // both axis lines in renderGraph() are made of.
@@ -894,6 +1149,34 @@
       svg.appendChild(el);
     }
 
+    // Decides whether a graph's expression is a 2D curve y=f(x) or a 3D
+    // surface z=f(x,y): the same "y" letter means different things in
+    // each (the plotted axis variable vs. an ordinary undefined
+    // variable), and there's no separate shortcut to tell them apart —
+    // the expression itself decides, the same way it already decides
+    // whether to call a user-defined function or just multiply by a
+    // letter. Evaluates one sample with "x" bound (same as the 2D path
+    // always does) and "y" left exactly as collectDefinitions() found it
+    // (undefined, unless an earlier line like "y:=5" already defines
+    // it). If that throws specifically because "y" itself is the
+    // undefined reference, the expression must be using "y" as a second
+    // free variable — i.e. a 3D surface — so switch modes. Any other
+    // outcome (no throw at all, because "y" isn't referenced or is
+    // already a defined value; or a throw for an unrelated reason, e.g.
+    // some other undefined letter) leaves it as an ordinary 2D curve,
+    // exactly like before this existed.
+    function detectGraphMode(exprLatex, defs) {
+      var testVars = {};
+      for (var k in defs.vars) testVars[k] = defs.vars[k];
+      testVars.x = 0;
+      try {
+        evaluateLatex(exprLatex, testVars, defs.funcs);
+        return "2d";
+      } catch (e) {
+        return e.message === "undefined variable y" ? "3d" : "2d";
+      }
+    }
+
     // Samples the graph's expression across [-GRAPH_DOMAIN, GRAPH_DOMAIN],
     // binding "x" to each sample on top of whatever collectDefinitions()
     // finds above this line (so a graph can plot a previously-defined
@@ -903,6 +1186,13 @@
     // plain number, ...) breaks the curve there instead of drawing a
     // spurious straight segment across the gap — the same idea as an
     // asymptote not being connected across itself on a real graph.
+    //
+    // Dispatches to renderGraph3D() instead when detectGraphMode() finds
+    // the expression is actually a surface z=f(x,y) rather than a plain
+    // curve — see that function for the detection rule. Either way the
+    // "y ="/"z =" label to the left of the field is kept in sync here,
+    // live on every edit, since the mode can only be known after
+    // evaluating, not when the line was first created.
     function renderGraph(line) {
       var svg = line.svg;
       while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -910,6 +1200,11 @@
       var exprLatex = line.mathField.latex();
       if (!exprLatex) return;
       var defs = collectDefinitions(line);
+
+      var mode = detectGraphMode(exprLatex, defs);
+      line.graphMode = mode;
+      line.yLabelEl.textContent = mode === "3d" ? "z =" : "y =";
+      if (mode === "3d") { renderGraph3D(line, exprLatex, defs); return; }
 
       var points = [];
       for (var i = 0; i <= GRAPH_SAMPLES; i++) {
@@ -972,24 +1267,152 @@
       flushSegment();
     }
 
+    // Renders a 3D surface z=f(x,y) as an SVG wireframe mesh — this
+    // project has no graphing/3D library and no build step to add one
+    // with, so the mesh is just a grid of <polyline>s, projected by
+    // hand, drawn in the same monochrome currentColor style as
+    // everything else. Called from renderGraph() once detectGraphMode()
+    // has decided the expression needs both "x" and "y" as free
+    // variables; "x" and "y" are bound here across the sample grid the
+    // same way renderGraph() always binds "x" for a 2D curve — each one
+    // overriding any same-named entry collectDefinitions() found above
+    // this line, per the usual rule that the plotted axis variable(s)
+    // always win.
+    function renderGraph3D(line, exprLatex, defs) {
+      var svg = line.svg;
+      var N = GRAPH3D_SAMPLES;
+
+      // grid[i][j] is {x, y, z} for a plottable point, or null for one
+      // that threw (undefined elsewhere in the expression, a range
+      // result, non-finite, ...) — same "leave a gap, don't draw a
+      // spurious line across it" idea as the 2D curve's null points,
+      // just checked in both mesh directions below instead of one.
+      var grid = [], zs = [];
+      for (var i = 0; i < N; i++) {
+        var gx = -GRAPH_DOMAIN + (2 * GRAPH_DOMAIN * i) / (N - 1);
+        var row = [];
+        for (var j = 0; j < N; j++) {
+          var gy = -GRAPH_DOMAIN + (2 * GRAPH_DOMAIN * j) / (N - 1);
+          var vars = { x: gx, y: gy };
+          for (var k in defs.vars) if (k !== "x" && k !== "y") vars[k] = defs.vars[k];
+          try {
+            var z = evaluateLatex(exprLatex, vars, defs.funcs);
+            row.push(typeof z === "number" && isFinite(z) ? { x: gx, y: gy, z: z } : null);
+          } catch (e) {
+            row.push(null);
+          }
+          if (row[j]) zs.push(row[j].z);
+        }
+        grid.push(row);
+      }
+      if (zs.length === 0) return; // nothing plottable yet; leave it blank
+
+      var zMin = Math.min.apply(null, zs), zMax = Math.max.apply(null, zs);
+      if (zMin === zMax) { zMin -= 1; zMax += 1; } // a flat plane still gets visible relief
+      var zMid = (zMin + zMax) / 2, zHalfRange = (zMax - zMin) / 2;
+
+      // A fixed isometric projection: x and y each tilt 30° off the
+      // horizontal (the standard isometric angle) in opposite screen
+      // directions, and z simply moves a point straight up the screen —
+      // scaled by zRelief against the normalized x/y footprint so the
+      // surface's height reads as proportionate to it rather than
+      // dwarfing or vanishing into it regardless of the actual z-range
+      // (which is why z is normalized by the *computed* range here,
+      // the 3D equivalent of the 2D curve's y-axis auto-scaling).
+      var COS30 = Math.cos(Math.PI / 6), SIN30 = Math.sin(Math.PI / 6);
+      var zRelief = 0.9;
+      function project(pt) {
+        var nx = pt.x / GRAPH_DOMAIN, ny = pt.y / GRAPH_DOMAIN;
+        var nz = (pt.z - zMid) / zHalfRange;
+        return [(nx - ny) * COS30, (nx + ny) * SIN30 - nz * zRelief];
+      }
+
+      // The projected footprint's size and position on screen vary with
+      // the data (a steep surface projects "taller" than a flat one), so
+      // fit/center it into the viewport from its own bounding box — the
+      // 3D analogue of the 2D curve's y-axis auto-scaling, just in both
+      // projected dimensions instead of one.
+      var minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+      for (var pi = 0; pi < N; pi++) {
+        for (var pj = 0; pj < N; pj++) {
+          var cell = grid[pi][pj];
+          if (!cell) continue;
+          var p = project(cell);
+          if (p[0] < minPX) minPX = p[0];
+          if (p[0] > maxPX) maxPX = p[0];
+          if (p[1] < minPY) minPY = p[1];
+          if (p[1] > maxPY) maxPY = p[1];
+        }
+      }
+
+      var W = 600, H = 300;
+      var spanX = (maxPX - minPX) || 1, spanY = (maxPY - minPY) || 1;
+      var scale = Math.min((W * 0.85) / spanX, (H * 0.85) / spanY);
+      var centerPX = (minPX + maxPX) / 2, centerPY = (minPY + maxPY) / 2;
+      function toPx(pt) {
+        var p = project(pt);
+        return [W / 2 + (p[0] - centerPX) * scale, H / 2 + (p[1] - centerPY) * scale];
+      }
+
+      // One mesh line per row and per column — a run of consecutive
+      // plottable grid points becomes one <polyline>, broken (a new
+      // polyline started) at any null, the same gap-on-failure rule the
+      // 2D curve uses, just applied along each line of the grid
+      // separately instead of one single sequence.
+      function drawMeshLine(cells) {
+        var segment = [];
+        function flush() {
+          if (segment.length > 1) {
+            var poly = document.createElementNS(svg.namespaceURI, "polyline");
+            poly.setAttribute("points", segment.map(function (pt) {
+              var px = toPx(pt);
+              return px[0] + "," + px[1];
+            }).join(" "));
+            poly.setAttribute("class", "graph-mesh");
+            svg.appendChild(poly);
+          }
+          segment = [];
+        }
+        for (var c = 0; c < cells.length; c++) {
+          if (cells[c]) segment.push(cells[c]); else flush();
+        }
+        flush();
+      }
+      for (var ri = 0; ri < N; ri++) drawMeshLine(grid[ri]); // rows: fixed x, varying y
+      for (var cj = 0; cj < N; cj++) {                       // columns: fixed y, varying x
+        var col = [];
+        for (var ci = 0; ci < N; ci++) col.push(grid[ci][cj]);
+        drawMeshLine(col);
+      }
+    }
+
     // Turns a pending line into a graph: Mathcad's own bare "@" shortcut
     // for inserting an X-Y plot. Unlike a real Mathcad plot (which has
     // separate placeholders for the axis limits too), this always plots
     // over the fixed domain above and auto-scales the y-axis to fit —
     // one placeholder (the expression) rather than several, in keeping
     // with how small the rest of this app's own shortcuts are kept.
+    //
+    // The same expression field doubles as a 3D surface plot (z = f(x,y))
+    // when the typed expression actually uses "y" as a second free
+    // variable — see renderGraph()'s mode detection. There's no separate
+    // shortcut for that; the label just switches from "y =" to "z ="
+    // live, which is why it's a span renderGraph() can update rather
+    // than a fixed string set once here.
     function convertToGraph(line) {
       var container = document.createElement("div");
       container.className = "line graph-line";
       line.el.replaceWith(container);
       line.el = container;
       line.type = "graph";
+      line.graphMode = "2d";
 
       var exprRow = document.createElement("span");
       exprRow.className = "graph-expr";
       var yLabel = document.createElement("span");
       yLabel.className = "graph-ylabel";
       yLabel.textContent = "y =";
+      line.yLabelEl = yLabel;
       var exprEl = document.createElement("span");
       exprRow.appendChild(yLabel);
       exprRow.appendChild(exprEl);
@@ -1108,14 +1531,33 @@
       document.documentElement.classList.toggle("paper");
     }
 
+    // Resolves "the MathQuill field the Greek-letter shortcut below should
+    // insert into" from a raw keydown event's target — the same matrix-
+    // cell-vs-line resolution the rest of this listener already does
+    // further down (cellEl/hostLineEl), pulled out here since the
+    // Greek-letter check needs just the field itself, not also the cell's
+    // row/column the matrix-key handling further down needs. Returns null
+    // for anything that isn't a math-line, graph-line, or matrix-cell
+    // field — e.g. a heading or pending line — so the shortcut is simply
+    // not handled there (falls through to whatever the browser/contenteditable
+    // would otherwise do with that Ctrl combo).
+    function resolveMathField(target) {
+      var cellEl = target.closest ? target.closest(".matrix-cell") : null;
+      if (cellEl && cellEl._line) return cellEl._line.rows[cellEl._row][cellEl._col];
+      var hostLineEl = target.closest ? target.closest(".math-line, .graph-line") : null;
+      var hostLine = hostLineEl && hostLineEl._line;
+      return hostLine ? hostLine.mathField : null;
+    }
+
     // One global capture-phase listener handles every "this key means
     // something special" case in the app: Ctrl+S/Ctrl+Q (routed to Qt),
-    // Ctrl+L (toggles paper mode, handled entirely here), and, depending
-    // on what's focused, either matrix-cell keys ("," ";" Tab arrows) or
-    // math-line keys (":" "\" "|" "="). Capture phase means it sees the
-    // keystroke before MathQuill's own per-field handling does, which is
-    // what lets it override MathQuill's defaults for keys like ":" and
-    // "\" instead of just supplementing them.
+    // Ctrl+L (toggles paper mode, handled entirely here), Ctrl+<letter>/
+    // Ctrl+Shift+<letter> (Greek-letter insertion, GREEK_LOWER/GREEK_UPPER
+    // above), and, depending on what's focused, either matrix-cell keys
+    // ("," ";" Tab arrows) or math-line keys (":" "\" "|" "="). Capture
+    // phase means it sees the keystroke before MathQuill's own per-field
+    // handling does, which is what lets it override MathQuill's defaults
+    // for keys like ":" and "\" instead of just supplementing them.
     document.addEventListener("keydown", function (e) {
       var mod = e.ctrlKey || e.metaKey;
       if (mod && !e.shiftKey && !e.altKey) {
@@ -1135,6 +1577,33 @@
           return;
         }
       }
+
+      // --- Greek letters: Ctrl+<letter> / Ctrl+Shift+<letter> ---------
+      // Checked here, narrowly, before the generic "let every other Ctrl
+      // combo through" rule just below: only a key actually present in
+      // GREEK_LOWER/GREEK_UPPER is matched at all. Every unmapped combo —
+      // a/c/v/x (clipboard), plain s/q/l (handled above already), and
+      // every key that was never given a mapping — isn't matched by the
+      // lookup below, so this block does nothing for it and execution
+      // falls through, exactly as if this block weren't here, to that
+      // same "let every other Ctrl combo through" rule. A *mapped* key
+      // with nothing MathQuill-shaped focused (e.g. a heading) also isn't
+      // intercepted — only preventDefault()/stopImmediatePropagation() are
+      // skipped in that case, not the early return, but the observable
+      // effect (event left alone for the browser's own default handling)
+      // is the same either way.
+      if (mod && !e.altKey) {
+        var greekCmd = (e.shiftKey ? GREEK_UPPER : GREEK_LOWER)[e.key.toLowerCase()];
+        if (greekCmd) {
+          var greekField = resolveMathField(e.target);
+          if (greekField) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            greekField.cmd(greekCmd);
+          }
+          return;
+        }
+      }
+
       // Nothing below this point wants to intercept a Ctrl/Cmd combo
       // (copy, paste, select-all, ...), so let those all through as-is.
       if (mod) return;
@@ -1232,8 +1701,13 @@
         // that would need an actual plotting package (pgfplots or
         // similar) driven from sampled data, well beyond this app's
         // scope — so it degrades to just the defining equation, "y = "
-        // plus whatever was typed, as a normal display equation.
-        if (line.type === "graph") return { type: "math", content: "y=" + line.mathField.latex() };
+        // (or, for a 3D surface, "z = ") plus whatever was typed, as a
+        // normal display equation. line.graphMode is set by renderGraph()
+        // the same way the on-screen label is, so this follows whichever
+        // mode was last detected rather than assuming 2D.
+        if (line.type === "graph") {
+          return { type: "math", content: (line.graphMode === "3d" ? "z=" : "y=") + line.mathField.latex() };
+        }
         if (line.type === "heading-1") return { type: "title", content: line.el.textContent };
         if (line.type === "heading-2") return { type: "paragraph", content: line.el.textContent };
         if (line.type === "heading-3") return { type: "subparagraph", content: line.el.textContent };

@@ -50,6 +50,24 @@ Inside a math field:
   the cube-root template filled with `3` and `27` followed by `=` shows
   `= 3`. It also resolves variables defined on earlier lines — `a:3` then
   `b:27` then the *a*-th root of `b` followed by `=` also gives `3`
+- Common named functions evaluate directly, no definition needed:
+  `sin cos tan sec csc cot`, their inverses (`arcsin arccos arctan arcsec
+  arccsc arccot`), the hyperbolic versions (`sinh cosh tanh sech csch
+  coth`) and their inverses (`arcsinh arccosh arctanh arcsech arccsch
+  arccoth`), plus `ln` (natural log), `log` (base 10), and `exp`. Just
+  type the name — MathQuill renders it upright automatically, the same
+  as `sin` always has — e.g. `sin(0)` followed by `=` gives `= 0`, and
+  `sin(i)` with a range variable `i` defined broadcasts the same way any
+  other operator does, e.g. `= 0, 0.841471, 0.909297, 0.14112` for
+  `i := 0…3`
+- `Ctrl+<letter>` / `Ctrl+Shift+<letter>` insert a lowercase/uppercase
+  Greek letter (Mathcad's own convention — see the Shortcuts table
+  below for the full mapping), usable as an ordinary variable name,
+  function name, or function parameter just like a Latin letter, e.g.
+  `Ctrl+B` then `:5` defines `β := 5`. Only works once the line is
+  already a math field (type any character first on a brand-new line,
+  the same way `\` only opens a square root once there's a math field
+  to open it in)
 - **Enter** starts a new line; **Backspace** at the start of an empty line
   removes it and returns you to the end of the previous one
 
@@ -87,13 +105,25 @@ X-Y plot) starts a **graph** instead of a math field:
   undefined reference, ...) leaves a gap instead of a spurious straight
   line across it, the same way a real graph doesn't connect across an
   asymptote
+- The same field also plots a **3D surface** `z = f(x, y)` instead,
+  automatically — if the expression actually uses `y` as a second free
+  variable (rather than leaving it unused, or using an earlier `y := ...`
+  definition as an ordinary value), the label switches live from `y =`
+  to `z =` and the plot becomes a wireframe mesh. Try `x^2+y^2` for a
+  paraboloid. Sampled on a much coarser 15×15 grid than the 2D curve's
+  201 points (a dense wireframe just looks like noise, and it's an
+  N² cost instead of 2D's N), projected with a fixed isometric
+  projection and auto-scaled/centered to the computed z-range. A grid
+  point that can't be evaluated leaves a gap in the mesh lines through
+  it, same principle as the 2D asymptote case, just per mesh segment
 - **Enter** finishes the graph and starts a new line below it;
   **Backspace** on an empty expression removes the graph, same as an
   empty math line
-- Exported as just the defining equation (`y = ...`, as a normal display
-  equation) rather than a plotted image — turning sampled points into an
-  actual embedded plot in the `.tex`/`.pdf` output would need a real
-  plotting package (e.g. `pgfplots`), which is out of scope here
+- Exported as just the defining equation (`y = ...` or, for a 3D
+  surface, `z = ...`, as a normal display equation) rather than a
+  plotted image — turning sampled points into an actual embedded plot in
+  the `.tex`/`.pdf` output would need a real plotting package (e.g.
+  `pgfplots`), which is out of scope here
 
 ## Shortcuts
 
@@ -102,6 +132,34 @@ X-Y plot) starts a **graph** instead of a math field:
 | `Ctrl+S` | Export   |
 | `Ctrl+Q` | Quit     |
 | `Ctrl+L` | Toggle a white-paper/black-ink look (vs. the default dark sheet) — session-only, not remembered between launches |
+
+### Greek letters
+
+`Ctrl+<letter>` for lowercase, `Ctrl+Shift+<letter>` for uppercase, in a
+math field, graph expression, or matrix cell. `a c v x` stay copy/paste/
+cut/select-all and plain `s q l` stay the app shortcuts above, so none of
+those six get a Greek mapping; `Ctrl+Shift+S`/`Ctrl+Shift+P` are also left
+unmapped even though plain `s`/`q`/`l` are reserved only in their
+unshifted form — **Σ**/**Π** already mean something specific to this app
+(the summation/product shortcuts above), so letting them double as plain
+variable names too would make `Σ := 5` followed by `Σ+1` silently
+misevaluate instead of failing loudly.
+
+| Lowercase | Letter | | Lowercase | Letter | | Lowercase | Letter |
+|---|---|---|---|---|---|---|---|
+| `Ctrl+B` | β | | `Ctrl+J` | ξ | | `Ctrl+R` | ρ |
+| `Ctrl+D` | δ | | `Ctrl+K` | κ | | `Ctrl+T` | τ |
+| `Ctrl+E` | ε | | `Ctrl+M` | μ | | `Ctrl+U` | υ |
+| `Ctrl+F` | φ | | `Ctrl+N` | ν | | `Ctrl+W` | χ |
+| `Ctrl+G` | γ | | `Ctrl+O` | ω | | `Ctrl+Y` | ψ |
+| `Ctrl+H` | η | | `Ctrl+P` | π | | `Ctrl+Z` | ζ |
+| `Ctrl+I` | ι | | | | | | |
+
+| Uppercase | Letter | | Uppercase | Letter | | Uppercase | Letter |
+|---|---|---|---|---|---|---|---|
+| `Ctrl+Shift+G` | Γ | | `Ctrl+Shift+J` | Ξ | | `Ctrl+Shift+F` | Φ |
+| `Ctrl+Shift+D` | Δ | | `Ctrl+Shift+U` | Υ | | `Ctrl+Shift+Y` | Ψ |
+| `Ctrl+Shift+Q` | Θ | | `Ctrl+Shift+L` | Λ | | `Ctrl+Shift+O` | Ω |
 
 ## Export
 
