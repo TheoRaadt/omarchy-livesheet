@@ -81,6 +81,7 @@ does. Exported as a standard `\begin{bmatrix}...\end{bmatrix}`.
 |----------|----------|
 | `Ctrl+S` | Export   |
 | `Ctrl+Q` | Quit     |
+| `Ctrl+L` | Toggle a white-paper/black-ink look (vs. the default dark sheet) — session-only, not remembered between launches |
 
 ## Export
 

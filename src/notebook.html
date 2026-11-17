@@ -8,9 +8,23 @@
 <style>
   html, body {
     margin: 0;
-    background: #0e0e10;
-    color: #e6e6e6;
+    background: var(--bg, #0e0e10);
+    color: var(--ink, #e6e6e6);
     font-family: -apple-system, "Segoe UI", sans-serif;
+  }
+  /* Toggled by Ctrl+L (togglePaperMode()): a white-paper/black-ink look
+     for printing-style reading, instead of the default dark sheet. Every
+     other rule below reads color through --ink (or currentColor, which
+     traces back to it) rather than hardcoding it, so this is the only
+     place the two appearances are actually defined.
+     This goes on <html>, not <body>: a custom property only cascades to
+     descendants, and <body> is a descendant of <html>, not the reverse —
+     putting it on <body> left <html>'s own background (which extends the
+     full viewport, taller than <body>'s content box) stuck on the old
+     dark default below wherever the content ended. */
+  html.paper {
+    --bg: #ffffff;
+    --ink: #111111;
   }
   #notebook {
     padding: 40px 48px;
@@ -90,14 +104,15 @@
     display: inline-block;
   }
   /* MathQuill's own field chrome (border/shadow, defaults to a light
-     theme) is replaced here to blend into this page's dark background. */
+     theme) is replaced here to blend into the current background/ink,
+     dark or paper. */
   .mq-editable-field {
     border: none !important;
     box-shadow: none !important;
-    color: #e6e6e6;
+    color: var(--ink, #e6e6e6);
   }
   .mq-editable-field .mq-cursor {
-    border-color: #e6e6e6 !important;
+    border-color: var(--ink, #e6e6e6) !important;
   }
 </style>
 </head>
@@ -899,13 +914,23 @@
       return line;
     }
 
+    // Flips the page between its default dark sheet and a white-paper/
+    // black-ink look — see the "body.paper" CSS rule above for what that
+    // actually changes. Session-only (not saved anywhere): this app has
+    // no settings storage, so it's back to the dark sheet on next launch,
+    // the same way the window size/position aren't remembered either.
+    function togglePaperMode() {
+      document.documentElement.classList.toggle("paper");
+    }
+
     // One global capture-phase listener handles every "this key means
     // something special" case in the app: Ctrl+S/Ctrl+Q (routed to Qt),
-    // and, depending on what's focused, either matrix-cell keys ("," ";"
-    // Tab arrows) or math-line keys (":" "\" "|" "="). Capture phase means
-    // it sees the keystroke before MathQuill's own per-field handling
-    // does, which is what lets it override MathQuill's defaults for keys
-    // like ":" and "\" instead of just supplementing them.
+    // Ctrl+L (toggles paper mode, handled entirely here), and, depending
+    // on what's focused, either matrix-cell keys ("," ";" Tab arrows) or
+    // math-line keys (":" "\" "|" "="). Capture phase means it sees the
+    // keystroke before MathQuill's own per-field handling does, which is
+    // what lets it override MathQuill's defaults for keys like ":" and
+    // "\" instead of just supplementing them.
     document.addEventListener("keydown", function (e) {
       var mod = e.ctrlKey || e.metaKey;
       if (mod && !e.shiftKey && !e.altKey) {
@@ -917,6 +942,11 @@
         if (e.key === "q" || e.key === "Q") {
           e.preventDefault(); e.stopImmediatePropagation();
           window.location.href = "livesheet:quit";
+          return;
+        }
+        if (e.key === "l" || e.key === "L") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          togglePaperMode();
           return;
         }
       }

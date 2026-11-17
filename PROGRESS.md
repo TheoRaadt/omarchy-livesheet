@@ -140,6 +140,28 @@ below was verified by building (`bin/build`), running the backend tests
     stopped driving that window to avoid clobbering their input (see the
     multi-variable function entry above, which came out of exactly that).
 
+- **White-paper/black-ink toggle (`Ctrl+L`)** — flips between the default
+  dark sheet and a white-background/black-text look, for printing-style
+  reading. Session-only (no settings storage in this app at all, so it's
+  back to dark on next launch, same as window size/position).
+  - `src/notebook.html`: the two appearances are `--bg`/`--ink` CSS custom
+    properties, read by every color rule (directly, or via `currentColor`
+    for things like the matrix brackets) rather than hardcoded colors, so
+    `html.paper` overriding those two variables is the only place the
+    look is actually defined; `togglePaperMode()` just toggles that class
+    and is wired to `Ctrl+L` in the same global keydown listener as
+    `Ctrl+S`/`Ctrl+Q`.
+  - Fixed as part of this: the class and variables initially went on
+    `<body>`, which seemed natural, but a CSS custom property only
+    cascades to descendants — `<body>` is a descendant of `<html>`, not
+    the reverse, so `<html>`'s own background rule couldn't see the
+    override. Caught live: the white background only painted behind
+    `<body>`'s content box, leaving the (taller) `<html>` viewport below
+    it stuck on the old dark color. Moved the class to `<html>` instead.
+  - Verified live in the running app: `Ctrl+L` flips `a := 2` from white-
+    on-dark to black-on-white filling the whole window, and back again
+    on a second `Ctrl+L`.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
