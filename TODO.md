@@ -8,28 +8,7 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-17. Everything below this line is still open.
-
-## Queued — small, do first
-
-- **Fix: Greek-letter shortcuts don't work as the first keystroke on a
-  brand-new line.** Root cause (traced, not guessed — see
-  `.claude/agents/frontend.md`'s "Lessons learned," the two most recent
-  entries): a plain-character shortcut (`\`, `;`, `$`, `#`, ...) reaches
-  the field via a buffered-replay path (`wirePendingInput()` →
-  `convertToMath()` → `insertChar()`) that only runs because the browser
-  inserts the literal character into the pending line's `contenteditable`
-  first, firing the `input` event that path depends on. Holding `Ctrl`
-  suppresses that normal text insertion, so a `Ctrl+<letter>` combo never
-  produces anything for that path to see or buffer — it's not a timing
-  issue, it's a different mechanism entirely for a modifier-key shortcut.
-  Proposed fix: have the pending line's own keydown handling
-  (`wireLineKeydown()`) recognize a mapped `Ctrl+<letter>`/`Ctrl+Shift+
-  <letter>` directly (the same way `wirePendingInput()`'s own `[`/`@`/
-  heading checks convert the line proactively), convert the line to math
-  right there, then insert the Greek command into the field that
-  conversion just created. Small, self-contained, no architecture
-  change — a good first pick for the next `frontend` delegation.
+Last updated: 2026-11-24. Everything below this line is still open.
 
 ## Queued — Batch 2: calculus & linear algebra
 

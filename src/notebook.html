@@ -1054,6 +1054,7 @@
       line.el.replaceWith(el);
       line.el = el;
       line.type = "pending";
+      el._line = line;
       delete line.rows;
       delete line.grid;
       wireLineKeydown(line);
@@ -1516,6 +1517,7 @@
       el.spellcheck = false;
       notebook.appendChild(el);
       var line = { el: el, type: "pending", mathField: null };
+      el._line = line;
       lines.push(line);
       wireLineKeydown(line);
       wirePendingInput(line);
@@ -1599,6 +1601,29 @@
           if (greekField) {
             e.preventDefault(); e.stopImmediatePropagation();
             greekField.cmd(greekCmd);
+            return;
+          }
+          // No MathQuill field to resolve to yet — if this is the very
+          // first keystroke on a brand-new pending line, there's no
+          // field *because* nothing has converted it to one yet. Unlike
+          // a plain-character shortcut ("\", ";", "$", "#", "@", a
+          // heading marker), which reaches wirePendingInput() for free
+          // because the browser inserts the literal character into the
+          // contenteditable first (firing the "input" event that path
+          // depends on), holding Ctrl suppresses that normal text
+          // insertion entirely: no character lands, no "input" event
+          // fires, so wirePendingInput() never sees anything to convert.
+          // Convert the line to math proactively right here — the same
+          // thing wirePendingInput()'s own "[", "@", and heading checks
+          // do — then insert the Greek command into the field that
+          // conversion just created, rather than relying on a replay
+          // path this modifier-key combo can never feed.
+          var pendingEl = e.target.closest ? e.target.closest(".pending") : null;
+          var pendingLine = pendingEl && pendingEl._line;
+          if (pendingLine && pendingLine.type === "pending") {
+            e.preventDefault(); e.stopImmediatePropagation();
+            convertToMath(pendingLine, "");
+            pendingLine.mathField.cmd(greekCmd);
           }
           return;
         }

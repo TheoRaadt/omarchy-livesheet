@@ -324,18 +324,29 @@ below was verified by building (`bin/build`), running the backend tests
     unchanged. Also confirmed the Greek-letter shortcut only fires inside
     an actual math/graph/matrix-cell field — on a brand-new pending line
     it's a no-op.
-  - **Correction, found on a later re-check**: the fresh-pending-line
-    no-op above was originally written off as "by design, the same as
-    every other field-only shortcut." That's wrong — a plain-character
-    shortcut (`\`, `;`, `$`, `#`, ...) *does* work as literally the
-    first keystroke on a brand-new line, via a buffered-replay path
-    (`wirePendingInput()` → `convertToMath()` → `insertChar()`) that a
-    `Ctrl+<letter>` combo never enters, because holding Ctrl suppresses
-    the browser's normal text insertion that path depends on. This is a
-    real, open, fixable gap specific to Greek letters (and any future
-    modifier-key shortcut), not a shared property of every shortcut —
-    see `TODO.md` for the queued fix and `.claude/agents/frontend.md`'s
-    "Lessons learned" for the full trace.
+  - **Correction, found on a later re-check, since fixed**: the fresh-
+    pending-line no-op above was originally written off as "by design,
+    the same as every other field-only shortcut." That was wrong — a
+    plain-character shortcut (`\`, `;`, `$`, `#`, ...) *does* work as
+    literally the first keystroke on a brand-new line, via a buffered-
+    replay path (`wirePendingInput()` → `convertToMath()` →
+    `insertChar()`) that a `Ctrl+<letter>` combo never enters, because
+    holding Ctrl suppresses the browser's normal text insertion that
+    path depends on — a gap specific to Greek letters (and any future
+    modifier-key shortcut), not a shared property of every shortcut.
+    **Fix**: `createPendingLine()` and `revertToPending()` now stamp
+    `el._line = line` on the pending `<div>` (mirroring the back-
+    reference math/matrix elements already carried); the Greek-letter
+    block in the global keydown listener, when `resolveMathField()`
+    finds no field yet, checks `e.target.closest(".pending")._line` for
+    a still-pending line and, if found, calls `convertToMath(line, "")`
+    to convert it right there before inserting the Greek command into
+    the field that conversion just created. Verified live: `Ctrl+B`/
+    `Ctrl+Shift+D` as the literal first keystroke on a fresh line now
+    insert β/Δ and convert the line to math; re-verified unchanged:
+    `\`/`;`/`$`/`@`/heading-marker as first keystroke, and `Ctrl+<letter>`
+    mid-line in an already-converted field. `bin/build`/`bin/test` both
+    clean (7/7).
 
 - **Built-in named functions (`sin cos tan ...`, no definition needed)**
   — `sin cos tan sec csc cot` and their inverses (`arcsin arccos arctan
@@ -442,3 +453,12 @@ below was verified by building (`bin/build`), running the backend tests
   a range, and `arcsin(sin(0.5))=0.5`; `@sin(x)` plots an unbroken sine
   curve as a graphing regression check; the pre-existing `$i^2=` sum
   shortcut re-verified unchanged.
+- 2026-11-24: Fixed Greek-letter shortcuts (`Ctrl+<letter>`/`Ctrl+Shift+
+  <letter>`) not working as the literal first keystroke on a brand-new
+  pending line (see "Greek letters" entry above for the fix itself).
+  `bin/build`/`bin/test` both clean (7/7). Live in the running app,
+  driven with `wtype` and screenshotted with `grim`: `Ctrl+B`/`Ctrl+Shift+
+  D` as the first keystroke on a fresh line now insert β/Δ and convert
+  the line to math; `\`/`;`/`$`/`@`/heading-marker as first keystroke,
+  and `Ctrl+<letter>` mid-line in an already-converted field, all
+  re-verified unchanged.

@@ -217,10 +217,37 @@ trap and its fix.
   `#`, ...), this doesn't matter in practice — see the correction above,
   it reaches the field anyway via the separate buffered-replay path. For
   a *modifier-key* shortcut (Greek letters' `Ctrl+<letter>`), it does
-  matter, and is an open, unfixed gap (see `TODO.md`). Don't assume a
+  matter — fixed 2026-11-24, see the entry below. Don't assume a
   fresh pending line behaves like a math line when testing a new
   field-scoped shortcut live; create the line, type a throwaway
   character, backspace it, then test the shortcut — and separately,
   also test it as the actual first keystroke on a brand-new line, since
   those two cases can genuinely differ depending on which mechanism the
   shortcut goes through.
+- **2026-11-24** — Fixed the modifier-key-on-a-fresh-pending-line gap
+  described in the two entries above. Only a math/matrix/graph element
+  carried a `_line` back-reference (set by `convertToMath`/
+  `addCellToRow`); a still-`pending` line's `<div>` had none, which is
+  why `e.target.closest(...)` resolution in the global keydown listener
+  could never find it. The fix is two lines, not a new code path:
+  stamp `el._line = line` in `createPendingLine()` and
+  `revertToPending()` too (mirroring the existing pattern), then in the
+  Greek-letter handler, when `resolveMathField()` comes back empty, fall
+  back to `e.target.closest(".pending")._line` and — if it's still
+  `type === "pending"` — call `convertToMath(line, "")` (empty buffered
+  text, since Ctrl suppressed any) before `.cmd()`-ing the Greek symbol
+  into the field that conversion just created. Lesson: when a resolver
+  function only recognizes some of a line's possible DOM shapes, check
+  whether the missing shape can gain a back-reference the same way the
+  recognized ones already do, before reaching for a structurally
+  different fix (a new buffered-replay mechanism, a parallel code path,
+  etc.) — the cheapest fix is often "give the thing the property the
+  resolver already looks for."
+- **2026-11-24** — This machine's Hyprland (0.56.2) rejects the classic
+  `hyprctl dispatch focuswindow address:0x...` invocation outright
+  ("dispatch in lua is a shorthand...") — it's moved to a Lua-based
+  `hyprctl eval` API instead. Merely calling `hl.get_window("address:
+  0x...")` inside `hyprctl eval '...'` was enough to bring the target
+  window to focus in practice. Worth a project/run skill if live
+  keyboard-driven testing via `wtype` stays routine, so each session
+  doesn't have to rediscover this.
