@@ -293,3 +293,25 @@ trap and its fix.
   than assumed from the LaTeX spec (which would suggest braces are
   always optional-but-conventional, not telling you what *this specific
   library* actually emits).
+- **2026-11-24** — The project's standard "load mathquill.min.js in a
+  throwaway headless-Chromium page, call `.typedText()`, read back
+  `.latex()`" autoOperatorNames check (used again this session for
+  mean/median/variance/stdev) silently fails in a new way if the
+  throwaway page doesn't also load `jquery.min.js` first, exactly as
+  `src/notebook.html`'s own `<head>` does (`jquery/jquery.min.js` before
+  `mathquill/mathquill.min.js`) — this bundled MathQuill build depends on
+  jQuery and throws (`Cannot read properties of undefined (reading
+  'prototype')`) partway through its own top-level setup when `$`/
+  `jQuery` isn't defined yet, before ever reaching the line that sets
+  `window.MathQuill`. The failure mode is quiet and easy to misread as
+  "the page didn't load": no `window.onerror` fires from a plain
+  `--dump-dom` run (headless Chromium's `--dump-dom` doesn't surface
+  console/uncaught-error output at all), so `MathQuill.getInterface(2)`
+  just throws "MathQuill is not defined" in the test's own try/catch,
+  which looks like a script-loading or path problem rather than a missing
+  dependency. Diagnosed by re-running with
+  `--enable-logging=stderr --v=1` and grepping stderr for "CONSOLE" —
+  that's what actually surfaces an uncaught in-page exception when
+  `--dump-dom` alone won't show it. Always copy `jquery.min.js` alongside
+  `mathquill.min.js`/`mathquill.css` into the throwaway test directory
+  and load it first.

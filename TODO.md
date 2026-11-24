@@ -8,18 +8,9 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-24 (matrix functions & equation solver shipped —
-see `PROGRESS.md`). Everything below this line is still open.
-
-## Queued — statistical functions (small, quick follow-on)
-
-`mean`/`median`/`variance`/`stdev`/... — numeric, likely scoped over a
-range or matrix value. Deliberately left undone when matrix functions/
-equation solver shipped (see `PROGRESS.md`): matrices are now real
-values with the same `vars`/`funcs` plumbing a stats builtin would use,
-so this should be a small, mechanical addition, not a redesign. Exact
-function set still to be decided — start from the list above and check
-with the user if anything beyond it seems warranted.
+Last updated: 2026-11-24 (matrix functions, equation solver, and
+statistical functions shipped — see `PROGRESS.md`). Everything below
+this line is still open.
 
 ## Queued — symbolic calculus (derivatives & integrals; big, needs its own design pass)
 

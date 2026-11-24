@@ -377,6 +377,59 @@
       return value.reduce(combine);
     }
 
+    // mean/median/variance/stdev (see TODO.md's "statistical functions"
+    // item) are the first builtins in this file that treat BOTH existing
+    // collection-shaped values the same way: a range (a flat JS array,
+    // e.g. from i:=0;10) and a named matrix (the tagged
+    // { __matrix: true, rows: [[...]] } value from makeMatrix()/
+    // isMatrixValue() above). flattenCollection() is what lets a single
+    // set of four functions below accept either: a range is already
+    // flat, a matrix is flattened row-major into one list, and anything
+    // else (a bare scalar, for instance) is a clear error rather than
+    // something that silently "works" on a 1-element list.
+    function flattenCollection(v) {
+      if (Array.isArray(v)) return v;
+      if (isMatrixValue(v)) {
+        var flat = [];
+        for (var r = 0; r < v.rows.length; r++) {
+          for (var c = 0; c < v.rows[r].length; c++) flat.push(v.rows[r][c]);
+        }
+        return flat;
+      }
+      throw new Error("expected a range or matrix argument (e.g. i:=0;10, or a named matrix)");
+    }
+    function meanOf(list) {
+      if (list.length === 0) throw new Error("mean: empty collection");
+      var sum = 0;
+      for (var i = 0; i < list.length; i++) sum += list[i];
+      return sum / list.length;
+    }
+    function medianOf(list) {
+      if (list.length === 0) throw new Error("median: empty collection");
+      var sorted = list.slice().sort(function (a, b) { return a - b; });
+      var n = sorted.length, mid = Math.floor(n / 2);
+      return n % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    }
+    // Variance/stdev convention: POPULATION (divide by n), not sample
+    // (divide by n-1) — deliberately picking one rather than building
+    // both, per TODO.md's "small" scoping for this item. Reasoning: the
+    // collection a user hands this (a range they just defined, or a
+    // matrix they just named) is the actual, complete dataset sitting in
+    // front of them on the sheet — this evaluator has no concept of "this
+    // data is a sample drawn from some larger, unobserved population" (no
+    // other builtin here does inferential statistics), so dividing by n
+    // ("the variance/spread of exactly this data") is the more faithful
+    // reading than n-1's "estimate of a population this is a sample of".
+    // Matches Python's statistics.pvariance/pstdev default framing for
+    // the same reason.
+    function varianceOf(list) {
+      if (list.length === 0) throw new Error("variance: empty collection");
+      var m = meanOf(list), sumSq = 0;
+      for (var i = 0; i < list.length; i++) { var d = list[i] - m; sumSq += d * d; }
+      return sumSq / list.length;
+    }
+    function stdevOf(list) { return Math.sqrt(varianceOf(list)); }
+
     // Ctrl+<letter> (lowercase) / Ctrl+Shift+<letter> (uppercase) insert a
     // Greek letter into the focused math/graph/matrix-cell field — see the
     // global keydown listener far below. Mathcad/Mathcad-notebook
@@ -760,6 +813,18 @@
         if (!isMatrixValue(arg)) throw new Error("expected a matrix argument");
         return fn(arg);
       }
+      // Shared by the four statistics builtins (mean, median, variance,
+      // stdev below): same "(" expr ")" shape as callMatrixFn() above,
+      // but the argument can be EITHER collection shape (a range or a
+      // matrix value — see flattenCollection()), not just a matrix, and
+      // the result is always a plain scalar.
+      function callStatFn(fn) {
+        var usesLeft = eat("\\left(");
+        if (!usesLeft && !eat("(")) throw new Error("expected ( after function name");
+        var arg = parseExpr();
+        if (usesLeft) eat("\\right)"); else eat(")");
+        return fn(flattenCollection(arg));
+      }
       // Captures the raw, unevaluated text of one solve(...) argument —
       // up to the next top-level "," or the call's own closing paren,
       // tracking (), {}, and \left(/\right) depth so a nested comma or
@@ -1009,6 +1074,41 @@
         if (src.startsWith("solve", pos) && (src.startsWith("(", pos + 5) || src.startsWith("\\left(", pos + 5))) {
           pos += 5;
           return parseSolveCall();
+        }
+        // mean/median/variance/stdev (TODO.md's "statistical functions"
+        // item): checked the same empirical way as every other
+        // autoOperatorNames claim in this file (a throwaway MathField in
+        // headless Chromium, typing e.g. "mean(2,3,4)" and reading back
+        // .latex()) — none of the four are in MathQuill's native table
+        // (all four come back as plain typed letters, not a recognized
+        // \operatorname{...}/native command, same outcome as "trace"/
+        // "solve" above, unlike "sin"/"det"). So they use the identical
+        // literal-substring-gated-on-"(" pattern as trace/solve just
+        // above, with the same collision-risk reasoning: each needs its
+        // exact run of single-letter variables spelled out AND an
+        // immediately-following call-shaped paren, which is far less
+        // likely than a short collision like "a*sin(...)" already
+        // rejected for "asin". Each accepts either collection shape (a
+        // range or a matrix value) via callStatFn()/flattenCollection()
+        // above, not just a matrix like det/trace — see
+        // flattenCollection()'s own comment for why. variance/stdev use
+        // the population (divide-by-n) convention — see varianceOf()'s
+        // comment for why sample (n-1) wasn't also built.
+        if (src.startsWith("mean", pos) && (src.startsWith("(", pos + 4) || src.startsWith("\\left(", pos + 4))) {
+          pos += 4;
+          return callStatFn(meanOf);
+        }
+        if (src.startsWith("median", pos) && (src.startsWith("(", pos + 6) || src.startsWith("\\left(", pos + 6))) {
+          pos += 6;
+          return callStatFn(medianOf);
+        }
+        if (src.startsWith("variance", pos) && (src.startsWith("(", pos + 8) || src.startsWith("\\left(", pos + 8))) {
+          pos += 8;
+          return callStatFn(varianceOf);
+        }
+        if (src.startsWith("stdev", pos) && (src.startsWith("(", pos + 5) || src.startsWith("\\left(", pos + 5))) {
+          pos += 5;
+          return callStatFn(stdevOf);
         }
         // A variable (a single Latin letter or a Greek command token —
         // see matchIdentifierAt()) or a user-defined function call.

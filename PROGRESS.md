@@ -506,7 +506,46 @@ below was verified by building (`bin/build`), running the backend tests
     above was found through), `solve(x^2-4,x)=2`, and
     `solve(m,b)` for `m:=[2,1;1,3]`, `b:=[5;10]` → `[1;3]` (2·1+1·3=5,
     1·1+3·3=10 ✓). Statistical functions (`mean`/`median`/`variance`/
-    `stdev`) were left undone — see `TODO.md`.
+    `stdev`) shipped separately — see the entry right below.
+
+- **Statistical functions** — `mean`, `median`, `variance`, `stdev`,
+  each accepting either a range (already a flat array) or a named
+  matrix value (flattened row-major into one list via
+  `flattenCollection()`), returning a scalar.
+  - **Variance/stdev use the population convention** (divide by n, not
+    n-1): this evaluator has no notion of "a sample drawn from a larger
+    unobserved population" — a range or matrix the user hands in is the
+    actual, complete dataset on the sheet, so dividing by n ("the
+    spread of exactly this data") is the more faithful reading. Matches
+    Python's `statistics.pvariance`/`pstdev` default. Only one
+    convention was built, matching this item's "small" scoping in
+    `TODO.md`.
+  - **Not in MathQuill's native operator-name table** (checked
+    empirically, same method as every other such claim in this file) —
+    all four use the same literal-substring-gated-on-`(` pattern as
+    `trace`/`solve` from the matrix work above, with the same
+    collision-risk reasoning.
+  - A gotcha hit and fixed while checking the above empirically, now in
+    `.claude/agents/frontend.md`'s lessons: the project's standard
+    throwaway-headless-Chromium MathQuill check silently reports every
+    name (even natively-recognized ones) as "unrecognized" if the test
+    page loads `mathquill.min.js` without `jquery.min.js` first — this
+    bundled MathQuill build depends on jQuery and throws during its own
+    setup if `$` isn't defined yet, and `--dump-dom` doesn't surface
+    that error on its own.
+  - Verified with a Node-level check of the pure functions (mean/
+    median/variance/stdev over a plain array, an even-length list, a
+    messy unsorted/negative list cross-checked against an independently
+    computed variance, a flattened 2×3 and 3×2 matrix, and error cases
+    on an empty/non-collection argument) and live in the running app
+    (`bin/build`/`bin/test` clean, 7/7): `i:=0…4` then `mean(i)=2`,
+    `median(i)=2`, `variance(i)=2`, `stdev(i)=1.414214`; a named 2×3
+    matrix gives `mean=3.5`, `median=3.5`, `variance=2.916667`,
+    `stdev=1.707825`, matching independently-recomputed expectations;
+    `mean(5)` (a bare scalar) leaves just `=` rather than crashing; and
+    `trace` on a non-square matrix still correctly fails, confirming
+    the new dispatch checks didn't disturb existing `trace`/`solve`/
+    `det` ordering.
 
 ## Not done / out of scope (per README's own "Notes" section)
 
@@ -573,3 +612,13 @@ below was verified by building (`bin/build`), running the backend tests
   for two new live-testing gotchas hit along the way (MathQuill
   exponent blocks don't auto-exit after typing, and Ctrl+A can select/
   delete across the *entire* document, not just the focused field).
+- 2026-11-24: Statistical functions (see the entry above for the full
+  design). `bin/build`/`bin/test` clean (7/7). Verified independently
+  (not just trusting the delegated report) in a plain-Chrome-hosted
+  copy of `notebook.html`: `i:=0…4` then `mean(i)=2`, `median(i)=2`,
+  `variance(i)=2`, `stdev(i)=1.414214` — all correct. A stray
+  `.claude/agent-memory/` directory the implementing session created
+  (an invented location, not this project's actual memory system) was
+  removed before committing; the one substantive lesson in it (the
+  jQuery-load-order gotcha) was already correctly captured in
+  `.claude/agents/frontend.md`'s own lessons-learned section.
