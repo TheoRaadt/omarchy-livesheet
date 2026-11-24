@@ -412,6 +412,102 @@ below was verified by building (`bin/build`), running the backend tests
     unchanged) plots a correct, unbroken sine curve — a regression check
     that the builtin-function plumbing didn't disturb graphing.
 
+- **Matrix functions & equation solver** — matrices are now real,
+  nameable values, not just standalone typeset widgets, plus
+  `transpose`/`det`/`trace`/`inverse` and a `solve()` for both a single
+  equation and a linear system.
+  - **Matrices as values**: `A:[` on a math line showing exactly `A:=`
+    (nothing else typed yet) names the matrix that follows — same
+    spirit as `A:3` becoming `A := 3`. Still `line.type === "matrix"`
+    (just with a new `line.name`), so every existing per-type
+    dispatcher needed no changes. `collectDefinitions()` reads a named
+    matrix line's grid of cells into a tagged value,
+    `{ __matrix: true, rows: [[...]] }` — tagged rather than a bare
+    array specifically so `broadcast()`/`broadcastUnary()`'s
+    `Array.isArray()` checks (which mean "this is a range") never
+    confuse the two; a matrix reaching either of those (`A+B`, `sin(A)`)
+    throws a clear error rather than misbehaving silently. An unnamed
+    matrix (the original bare `[` on a pending line) is unchanged —
+    still just a typeset widget, not a value.
+  - **`transpose` and `inverse` are `A^T`/`A^-1`, not function calls**
+    — a deliberate pivot, not the original plan. MathQuill's
+    `autoOperatorNames` table (what makes `sin(`/`det(` render upright
+    instead of as separate italic letters) is a closure-internal table
+    with no reachable reference to extend in place — `MQ.config()`
+    *replaces* the whole table rather than adding to it (same
+    conclusion the sech/csch investigation reached earlier in this
+    file), and "transpose"/"inverse" aren't in it by default. Rather
+    than accept that gap, `parsePow()` special-cases a matrix base:
+    `A^T` → `transposeMatrix()`, `A^-1` → `inverseMatrix()` (Gauss-
+    Jordan with partial pivoting) — this is also literally how Mathcad
+    itself displays both operations (real toolbar operators, not typed
+    words), so it's a better match for the app's own conventions, not
+    just a workaround.
+  - **`det`/`trace` are function calls.** `\det` *is* in MathQuill's
+    native table (confirmed empirically, same standard as every other
+    `autoOperatorNames` claim in this file), so `det(A)` renders
+    upright for free. `trace` is not — typing it renders as 5 separate
+    italic single-letter variables with no distinguishing mark, same
+    underlying risk as the existing `asin` note above. Matched as a
+    literal substring in `parseAtom`, gated to fire only when
+    immediately followed by `(`, which was judged a much lower
+    collision risk than `asin` (needs the exact letters `t-r-a-c-e` as
+    adjacent variables *and* an immediately-following call-shaped
+    paren). Cosmetic gap: `trace(A)` renders italicized, unlike `det`.
+  - **A matrix-valued result renders as a real typeset matrix, not a
+    flat number list** — but not via the originally-planned mechanism.
+    The plan was to write `matrixLatex()`'s `\begin{bmatrix}...
+    \end{bmatrix}` string into the field via `MathField.write()`;
+    checked empirically before building anything (a throwaway
+    `MathField`, `write()` with that exact string, read `.latex()`
+    back) and found this bundled MathQuill build has **no bmatrix/array
+    environment support at all** — `write()` with that string silently
+    leaves the field empty. `matrixLatex()` itself is still correct and
+    unchanged — it's only ever handed to the C++ `Backend` for export,
+    which has a real LaTeX engine behind it, not MathQuill. The actual
+    mechanism: `appendMatrixResult()` builds a small read-only
+    bracket+grid widget (the same CSS an editable matrix line uses,
+    with `MQ.StaticMath` cells instead of `MQ.MathField`) appended as a
+    DOM sibling of the line's own field whenever a result is a matrix
+    value; a field `edit` handler clears the stale widget on further
+    edits to that line.
+  - **`solve(expr, x)` / `solve(A, b)`** — one call, dispatching on
+    whether the second argument is already a matrix-bound variable.
+    Neither `solve` nor `trace` are in MathQuill's native name table
+    either, matched the same literal-substring way. Single equation:
+    Newton's method (`newtonSolve()`, fixed starting guess of 1 — not
+    0, which trivially zeroes the derivative of any pure power and
+    stalls on step one), chosen over bisection because bisection needs
+    a bracketing interval this one-argument-per-side call shape has no
+    room to supply. Known limitation inherent to Newton's method, not
+    this implementation: returns whichever root the fixed guess
+    converges to, not "the" root of an equation that may have several.
+    System: `gaussianSolveSystem()` reduces `[A | b]` straight to
+    `[I | x]`, reusing the same `gaussJordanEliminate()` helper
+    `inverse()` is built on.
+  - **A real, pre-existing, non-matrix-specific bug found and fixed
+    along the way**: `insertChar()`'s `"="` handler evaluated the
+    field's *entire* current LaTeX, including any `name:=` prefix,
+    rather than just the RHS — so defining and displaying a value on
+    one line (`x:=5=`) had always been broken (nothing had exercised
+    that combination before; every existing verified example defines
+    on one line and evaluates on the next). Fixed by applying the same
+    `name:=` stripping `collectDefinitions()`'s `parseDefinitionLHS()`
+    already does, inside `insertChar()`'s `"="` branch too.
+  - Verified with Node-level logic tests against the pure matrix/solver
+    functions (transpose, det, trace, inverse and its singular-matrix
+    throw, `solve(x^2-4,x)=2`, a linear system, matrix-arithmetic safety
+    guards throwing instead of misbehaving) and live in both the
+    compiled app and a plain-Chrome-hosted copy of `notebook.html`
+    (`bin/build`/`bin/test` clean, 7/7): `a:=[2,1;1,3]` then
+    `det(a)=5`, `trace(a)=5`, `a^-1=` renders
+    `[[0.6,-0.2],[-0.2,0.4]]`, `b:=a^T=` renders the transpose inline
+    on a named-definition line (the combination the "=" prefix bug
+    above was found through), `solve(x^2-4,x)=2`, and
+    `solve(m,b)` for `m:=[2,1;1,3]`, `b:=[5;10]` → `[1;3]` (2·1+1·3=5,
+    1·1+3·3=10 ✓). Statistical functions (`mean`/`median`/`variance`/
+    `stdev`) were left undone — see `TODO.md`.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
@@ -462,3 +558,18 @@ below was verified by building (`bin/build`), running the backend tests
   the line to math; `\`/`;`/`$`/`@`/heading-marker as first keystroke,
   and `Ctrl+<letter>` mid-line in an already-converted field, all
   re-verified unchanged.
+- 2026-11-24: Matrix functions & equation solver (see the entry above
+  for the full design). `bin/build`/`bin/test` clean (7/7). Live-tested
+  twice over: once in the compiled app for basic matrix-naming, and a
+  full pass in a plain-Chrome-hosted copy of `notebook.html` (this is
+  pure static HTML/JS with no build step — serving it directly gives
+  real DOM/console inspection the compiled Qt app doesn't) after an
+  initial Qt-app test of a named-definition transpose appeared to fail
+  silently; re-running the identical keystroke sequence in Chrome
+  produced the correct result every time, pointing to a Qt-app-specific
+  test artifact (most likely the known terminal-focus-steals-keystrokes
+  hazard already in `.claude/agents/frontend.md`'s lessons) rather than
+  a real bug — see that file's newest entries for the full writeup and
+  for two new live-testing gotchas hit along the way (MathQuill
+  exponent blocks don't auto-exit after typing, and Ctrl+A can select/
+  delete across the *entire* document, not just the focused field).

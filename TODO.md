@@ -8,21 +8,54 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-24. Everything below this line is still open.
+Last updated: 2026-11-24 (matrix functions & equation solver shipped —
+see `PROGRESS.md`). Everything below this line is still open.
 
-## Queued — Batch 2: calculus & linear algebra
+## Queued — statistical functions (small, quick follow-on)
 
-Definite/indefinite integrals, single/partial derivatives, standard
-matrix functions (det, inverse, transpose, etc.), statistical functions
-(mean, median, variance, stdev, ... — likely over a range/matrix, exact
-set still to be scoped), and an equation solver (one equation, and
-systems of more than one — the system case almost certainly leans on
-whatever matrix inverse/elimination machinery the matrix-functions item
-builds, so keep them in the same batch, not just for file-collision
-reasons). No design research done yet beyond what's in the paragraph
-above — that's the next delegation's first job.
+`mean`/`median`/`variance`/`stdev`/... — numeric, likely scoped over a
+range or matrix value. Deliberately left undone when matrix functions/
+equation solver shipped (see `PROGRESS.md`): matrices are now real
+values with the same `vars`/`funcs` plumbing a stats builtin would use,
+so this should be a small, mechanical addition, not a redesign. Exact
+function set still to be decided — start from the list above and check
+with the user if anything beyond it seems warranted.
 
-## Queued — program blocks (biggest item, do after Batch 2)
+## Queued — symbolic calculus (derivatives & integrals; big, needs its own design pass)
+
+Originally bundled into "Batch 2" as plain numeric derivatives/
+integrals (finite differences, quadrature — the same per-point
+sampling style graphing already uses). Re-scoped 2026-11-24: the user
+was asked explicitly whether an indefinite integral (which has no
+numeric equivalent — it's an antiderivative *formula*, not a value at
+a point) should be dropped, limited to polynomials, or built as a real
+symbolic antiderivative, and chose **full symbolic antiderivative**.
+That decision pulls derivatives along with it for consistency (a formula
+result for one but not the other would be a strange asymmetry), and
+means this item is genuine computer-algebra work, not an extension of
+the existing numeric evaluator.
+
+**Why this is its own item, not a sub-task of anything else**: every
+line of `evaluateLatex()` today evaluates LaTeX directly to a number —
+there is no expression-tree/AST representation anywhere in the
+codebase. Symbolic differentiation and integration both require
+building and manipulating an actual tree (apply a rule, get back another
+expression, not a number), then rendering that tree back to LaTeX for
+display. That's a new representation layered under the existing
+evaluator, not a new builtin function alongside `sin`/`det`/etc. No
+design work has been done yet on what that tree's node shape looks like
+or how it coexists with the direct-evaluation path (replace it, or run
+alongside it for symbolic-only call sites?) — that's the next
+delegation's first job on this item.
+
+**Agreed v1 scope** (from the user's chosen option, not to be expanded
+without checking back): the standard forms — polynomials (power rule),
+trig, exp/log — and the chain rule for simple compositions. Not a
+general-purpose CAS; keep it bounded to what a derivative/integral
+button on a calculator-grade tool needs, not what a full computer-
+algebra system would eventually grow into.
+
+## Queued — program blocks (biggest item, sequenced after the above)
 
 A real programming construct inside livesheet, styled as close to math
 notation as possible — explicitly requested: "for each element in

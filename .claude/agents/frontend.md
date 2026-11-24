@@ -251,3 +251,45 @@ trap and its fix.
   window to focus in practice. Worth a project/run skill if live
   keyboard-driven testing via `wtype` stays routine, so each session
   doesn't have to rediscover this.
+  - **Correction, 2026-11-24, same day**: `hl.get_window("address:...")`
+    alone is NOT reliably sufficient to regain focus once it has moved
+    elsewhere in between (e.g. after using Chrome/claude-in-chrome tools
+    for unrelated verification) — it worked the first time in this
+    session by coincidence, then silently failed to refocus on a later
+    attempt (keystrokes went to the wrong window, producing a blank
+    screenshot with no error). No working `focuswindow`-equivalent lua
+    call was found (`w:focus()` doesn't exist on the object
+    `hl.get_window()` returns either). Always verify with
+    `hyprctl activewindow -j` immediately before sending keystrokes, not
+    just after the focus call — don't trust a prior success to still
+    hold.
+  - **A much more reliable alternative for `notebook.html` specifically,
+    2026-11-24**: since it's pure static HTML/JS with no build step (per
+    `CLAUDE.md`), serving `src/` with `python3 -m http.server` and
+    driving it with claude-in-chrome's `computer`/`javascript_tool`
+    gives real keyboard events AND real DOM/console inspection — far
+    better for debugging a live-test discrepancy than screenshot-and-
+    guess against the compiled Qt app. Reach for this first when a
+    wtype-driven Qt-app test result looks wrong; it's faster to get a
+    definitive answer from than fighting window-focus flakiness.
+- **2026-11-24** — Two MathQuill live-typing gotchas that cost real
+  time constructing test keystroke sequences (not app bugs — testing
+  mistakes, recorded so the next session doesn't repeat them):
+  typing `^` then a value does NOT auto-exit the exponent block — every
+  subsequent keystroke keeps typing *inside* the superscript until an
+  explicit `ArrowRight` (or equivalent) exits it, so `x^2-4` typed
+  without an exit in between renders as `x^{2-4}`, a completely
+  different (and here, un-evaluatable) expression. And Ctrl+A inside a
+  math field can select the app's *entire multi-line document*, not
+  just the current field's content — a followup Backspace then deletes
+  everything, not just what was intended; prefer repeated `BackSpace`
+  over Ctrl+A+Backspace when clearing test input live.
+- **2026-11-24** — MathQuill's `.latex()` output does NOT wrap a
+  single-character exponent in braces (`a^T`, not `a^{T}`) even though
+  it does for a multi-character one — any code branching on an
+  exponent's content (see `parsePow()`'s matrix-`^T`/`^-1` handling in
+  `src/notebook.html`) needs both the braced-group and the bare-single-
+  char case, confirmed empirically via a real MathQuill field rather
+  than assumed from the LaTeX spec (which would suggest braces are
+  always optional-but-conventional, not telling you what *this specific
+  library* actually emits).

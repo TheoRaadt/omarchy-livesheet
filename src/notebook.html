@@ -103,6 +103,26 @@
   .matrix-cell {
     display: inline-block;
   }
+  /* The "A := " label in front of a NAMED matrix line (see
+     convertMathToMatrix()/buildMatrixContainer()) — a sibling flex item
+     alongside the brackets/grid, so align-self centers it vertically
+     against the grid's full height the same way the brackets already
+     stretch to match it. */
+  .matrix-name-label {
+    align-self: center;
+    margin-right: 6px;
+  }
+  /* A matrix-VALUED "=" result on an ordinary math line (see
+     appendMatrixResult()) — the same bracket+grid look as a matrix
+     LINE above, just inline next to the field instead of being the
+     whole line, and built from read-only MQ.StaticMath cells instead
+     of editable MQ.MathFields. */
+  .result-matrix {
+    display: inline-flex;
+    align-items: stretch;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
   /* A graph line is the "y =" expression field stacked above its plot —
      see convertToGraph()/renderGraph(). Monochrome by design, the same
      as everything else on the page: the curve and axes are drawn in
@@ -305,6 +325,20 @@
     // that makes a range variable useful, applied uniformly rather than
     // needing special-casing at every call site below.
     function broadcast(a, b, op) {
+      // A matrix value (see makeMatrix()/isMatrixValue() below) is a
+      // tagged object, not a bare array, specifically so it's never
+      // mistaken for a range here — broadcasting +/-/* elementwise over
+      // a whole matrix the way a range does isn't implemented (only
+      // transpose/inverse are, via parsePow's own matrix check, and
+      // det/trace, via callMatrixFn) — so a matrix reaching this far
+      // (e.g. "A+B", or "A" used anywhere broadcast() handles) is a
+      // clear, named error instead of silently falling through to
+      // JS's own "+" on two plain objects (string concatenation, not a
+      // thrown error — technically harmless since formatNumber()'s
+      // isFinite() check would still catch it, but a worse message).
+      if (isMatrixValue(a) || isMatrixValue(b)) {
+        throw new Error("matrix arithmetic (other than ^T, ^-1, det, trace) is not supported");
+      }
       if (Array.isArray(a) && Array.isArray(b)) {
         if (a.length !== b.length) throw new Error("range length mismatch");
         return a.map(function (av, i) { return op(av, b[i]); });
@@ -314,8 +348,21 @@
       return op(a, b);
     }
     function broadcastUnary(a, op) {
+      if (isMatrixValue(a)) throw new Error("this operator does not support a matrix operand");
       return Array.isArray(a) ? a.map(op) : op(a);
     }
+
+    // A matrix value (collected from a named matrix line, or returned by
+    // transpose()/inverse() etc. below) is represented as a plain tagged
+    // object — { __matrix: true, rows: [[...], ...] } — rather than a
+    // bare JS array, specifically so broadcast()/broadcastUnary() above
+    // (which test Array.isArray() to decide "is this a range?") never
+    // confuse the two: a range is a flat array of numbers, a matrix is a
+    // 2D grid, and they broadcast completely differently (a range
+    // broadcasts elementwise automatically; a matrix, in this version,
+    // only supports the specific operations below, not elementwise +-*/).
+    function makeMatrix(rows) { return { __matrix: true, rows: rows }; }
+    function isMatrixValue(v) { return v !== null && typeof v === "object" && v.__matrix === true; }
     // Mathcad's Σ/Π operators (bare "$"/"#", summing/multiplying an
     // expression over whatever range variable it contains) are the mirror
     // image of broadcast(): where broadcast() turns a scalar operator into
@@ -460,6 +507,154 @@
     // case where "a" is actually a defined variable someone meant to
     // multiply by sin(...).
 
+    // Matrix-to-matrix/matrix-to-scalar linear algebra, used by
+    // evaluateLatex() below (callMatrixFn(), and parsePow()'s own ^T/
+    // ^-1 handling). Every function here takes/returns the tagged
+    // matrix-value shape from makeMatrix()/isMatrixValue() above, or a
+    // plain number for the scalar-returning ones (det, trace).
+    //
+    // transpose: swap rows and columns; the simplest possible matrix-to-
+    // matrix operation, deliberately picked first (see PROGRESS.md) to
+    // validate "compute a matrix value, then render it" end to end
+    // before attempting inverse()'s real elimination logic.
+    function transposeMatrix(m) {
+      var rows = m.rows, R = rows.length, C = R ? rows[0].length : 0;
+      var out = [];
+      for (var c = 0; c < C; c++) {
+        var row = [];
+        for (var r = 0; r < R; r++) row.push(rows[r][c]);
+        out.push(row);
+      }
+      return makeMatrix(out);
+    }
+    // Determinant via partial-pivoted Gaussian elimination to upper-
+    // triangular form (product of the diagonal, tracking the sign flip
+    // from each row swap) rather than cofactor expansion — O(n^3)
+    // instead of cofactor's O(n!), and the same elimination idea
+    // inverse()/gaussianSolveSystem() below reuse, so there's one
+    // technique to trust instead of two.
+    function determinantOf(m) {
+      var rows = m.rows.map(function (r) { return r.slice(); });
+      var n = rows.length;
+      if (n === 0 || rows.some(function (r) { return r.length !== n; })) {
+        throw new Error("det: matrix must be square");
+      }
+      var det = 1;
+      for (var i = 0; i < n; i++) {
+        var pivotRow = i;
+        for (var k = i; k < n; k++) if (Math.abs(rows[k][i]) > Math.abs(rows[pivotRow][i])) pivotRow = k;
+        if (Math.abs(rows[pivotRow][i]) < 1e-12) return 0; // singular: determinant is 0
+        if (pivotRow !== i) { var tmp = rows[i]; rows[i] = rows[pivotRow]; rows[pivotRow] = tmp; det = -det; }
+        det *= rows[i][i];
+        for (var k2 = i + 1; k2 < n; k2++) {
+          var factor = rows[k2][i] / rows[i][i];
+          for (var j = i; j < n; j++) rows[k2][j] -= factor * rows[i][j];
+        }
+      }
+      return det;
+    }
+    // Trace: the sum of the diagonal — no elimination needed at all.
+    function traceOf(m) {
+      var rows = m.rows, n = rows.length;
+      if (n === 0 || rows.some(function (r) { return r.length !== n; })) {
+        throw new Error("trace: matrix must be square");
+      }
+      var sum = 0;
+      for (var i = 0; i < n; i++) sum += rows[i][i];
+      return sum;
+    }
+    // Shared Gauss-Jordan elimination (full row reduction to the
+    // identity on the left `n` columns, with partial pivoting for
+    // numerical stability) over an augmented matrix of `n` rows and
+    // `width` columns, mutated and returned in place. inverse() below
+    // augments with the identity (width = 2n); gaussianSolveSystem()
+    // augments with the system's right-hand side (width = n+1) — the
+    // "systems of equations reuse inverse()'s elimination machinery"
+    // piece of the design.
+    function gaussJordanEliminate(aug, n, width) {
+      for (var col = 0; col < n; col++) {
+        var pivot = col;
+        for (var r = col; r < n; r++) if (Math.abs(aug[r][col]) > Math.abs(aug[pivot][col])) pivot = r;
+        if (Math.abs(aug[pivot][col]) < 1e-12) throw new Error("matrix is singular");
+        if (pivot !== col) { var t = aug[col]; aug[col] = aug[pivot]; aug[pivot] = t; }
+        var pv = aug[col][col];
+        for (var j = 0; j < width; j++) aug[col][j] /= pv;
+        for (var r2 = 0; r2 < n; r2++) {
+          if (r2 === col) continue;
+          var f = aug[r2][col];
+          if (f === 0) continue;
+          for (var j2 = 0; j2 < width; j2++) aug[r2][j2] -= f * aug[col][j2];
+        }
+      }
+      return aug;
+    }
+    function inverseMatrix(m) {
+      var rows = m.rows, n = rows.length;
+      if (n === 0 || rows.some(function (r) { return r.length !== n; })) {
+        throw new Error("inverse: matrix must be square");
+      }
+      var aug = rows.map(function (r, i) {
+        var identity = [];
+        for (var j = 0; j < n; j++) identity.push(i === j ? 1 : 0);
+        return r.concat(identity);
+      });
+      gaussJordanEliminate(aug, n, 2 * n);
+      return makeMatrix(aug.map(function (r) { return r.slice(n); }));
+    }
+    // Solves A x = b for the column vector x, given a square matrix A
+    // and an n x 1 column matrix b — row-reduces [A | b] straight to
+    // [I | x] instead of computing A^-1 and multiplying by b (fewer
+    // operations, and the inverse may not even be wanted/needed).
+    function gaussianSolveSystem(A, b) {
+      var rows = A.rows, n = rows.length;
+      if (rows.some(function (r) { return r.length !== n; })) {
+        throw new Error("solve: the coefficient matrix must be square");
+      }
+      var bRows = b.rows;
+      if (bRows.length !== n || bRows.some(function (r) { return r.length !== 1; })) {
+        throw new Error("solve: the right-hand side must be an n×1 column matrix");
+      }
+      var aug = rows.map(function (r, i) { return r.concat([bRows[i][0]]); });
+      gaussJordanEliminate(aug, n, n + 1);
+      return makeMatrix(aug.map(function (r) { return [r[n]]; }));
+    }
+
+    // Finds a root of `exprLatex` (read as a function of `varName`,
+    // every other name resolved via `vars`/`funcs` the normal way) by
+    // Newton's method: repeatedly evaluating the expression (and a
+    // numeric derivative, via a tiny central-difference step) at the
+    // current guess and stepping toward where it crosses zero.
+    // Chosen over bisection — the other classic numeric root-finder —
+    // because bisection needs a bracketing interval with a known sign
+    // change at both ends, which solve(expr, x)'s one-argument-per-side
+    // call shape has no room to supply; Newton's only needs a single
+    // starting guess (fixed at 1 below, not 0 — 0 trivially zeroes the
+    // derivative of any pure power like x^2, stalling on step one) and
+    // converges fast for the polynomial/trig expressions this evaluator
+    // already handles. The real tradeoff, inherent to Newton's method
+    // itself and not special to this implementation: it returns
+    // whichever root the fixed starting guess happens to converge to,
+    // not "the" root of an equation that may have several — there's no
+    // way to ask for a different one in this v1.
+    var NEWTON_GUESS = 1, NEWTON_STEP = 1e-6, NEWTON_MAX_ITER = 100, NEWTON_TOLERANCE = 1e-9;
+    function newtonSolve(exprLatex, varName, vars, funcs) {
+      var guess = NEWTON_GUESS;
+      for (var iter = 0; iter < NEWTON_MAX_ITER; iter++) {
+        var v1 = {}; for (var k in vars) v1[k] = vars[k]; v1[varName] = guess;
+        var fx = evaluateLatex(exprLatex, v1, funcs);
+        if (typeof fx !== "number" || !isFinite(fx)) throw new Error("solve: expression is not a plain number");
+        if (Math.abs(fx) < NEWTON_TOLERANCE) return guess;
+        var v2 = {}; for (var k2 in vars) v2[k2] = vars[k2]; v2[varName] = guess + NEWTON_STEP;
+        var fxh = evaluateLatex(exprLatex, v2, funcs);
+        var deriv = (fxh - fx) / NEWTON_STEP;
+        if (!isFinite(deriv) || deriv === 0) throw new Error("solve: derivative is zero, cannot continue");
+        var next = guess - fx / deriv;
+        if (!isFinite(next)) throw new Error("solve: diverged");
+        guess = next;
+      }
+      throw new Error("solve: did not converge");
+    }
+
     // A tiny LaTeX evaluator: just enough of the grammar MathQuill produces
     // (numbers, variables — a single Latin letter or a Greek command token,
     // see matchIdentifierAt() above — +-, implicit/explicit *, /, \frac,
@@ -552,6 +747,67 @@
         src = savedSrc; pos = savedPos;
         return v;
       }
+      // Shared by every matrix-argument builtin (det, trace below): a
+      // "(" or "\left(", one expression that must evaluate to a matrix,
+      // then the matching close. The matrix-to-matrix-or-scalar
+      // counterpart of callBuiltin() above (which is scalar-only, via
+      // broadcastUnary).
+      function callMatrixFn(fn) {
+        var usesLeft = eat("\\left(");
+        if (!usesLeft && !eat("(")) throw new Error("expected ( after function name");
+        var arg = parseExpr();
+        if (usesLeft) eat("\\right)"); else eat(")");
+        if (!isMatrixValue(arg)) throw new Error("expected a matrix argument");
+        return fn(arg);
+      }
+      // Captures the raw, unevaluated text of one solve(...) argument —
+      // up to the next top-level "," or the call's own closing paren,
+      // tracking (), {}, and \left(/\right) depth so a nested comma or
+      // paren (inside a \frac, a nested call, ...) doesn't end it early.
+      // Needed because solve()'s first argument (the equation) contains
+      // the very variable being solved for, which isn't bound to
+      // anything yet — it can't be evaluated eagerly the way every
+      // other builtin's arguments are via parseExpr().
+      function captureRawArg() {
+        var start = pos, depth = 0;
+        while (pos < src.length) {
+          if (depth === 0 && src[pos] === ",") break;
+          if (depth === 0 && src[pos] === ")") break;
+          if (depth === 0 && src.startsWith("\\right)", pos)) break;
+          if (src.startsWith("\\left(", pos)) { depth++; pos += 6; continue; }
+          if (src.startsWith("\\right)", pos)) { depth--; pos += 7; continue; }
+          if (src[pos] === "(" || src[pos] === "{") { depth++; pos++; continue; }
+          if (src[pos] === ")" || src[pos] === "}") { depth--; pos++; continue; }
+          pos++;
+        }
+        return src.slice(start, pos);
+      }
+      // "solve" has two call shapes, told apart by what its second
+      // argument turns out to be once evaluated (see the design note in
+      // TODO.md/PROGRESS.md for why this is the chosen syntax):
+      //   - solve(expr, x): x is a single identifier token with no
+      //     value of its own yet (or a plain scalar) — the single
+      //     nonlinear equation "expr = 0" case, via newtonSolve() above.
+      //   - solve(A, b): b is already bound to a matrix value — the
+      //     linear-system case Ax=b, via gaussianSolveSystem() above.
+      function parseSolveCall() {
+        var usesLeft = eat("\\left(");
+        if (!usesLeft) eat("(");
+        var arg1 = captureRawArg();
+        if (!eat(",")) throw new Error("solve expects 2 arguments: solve(expr, x) or solve(A, b)");
+        var arg2 = captureRawArg();
+        if (usesLeft) eat("\\right)"); else eat(")");
+        var trimmed2 = arg2.trim();
+        var varName = matchIdentifierAt(trimmed2, 0);
+        var isSingleVar = varName !== null && varName.length === trimmed2.length;
+        if (isSingleVar && vars.hasOwnProperty(varName) && isMatrixValue(vars[varName])) {
+          var A = evalSub(arg1), b = evalSub(arg2);
+          if (!isMatrixValue(A) || !isMatrixValue(b)) throw new Error("solve: expected two matrices for a system");
+          return gaussianSolveSystem(A, b);
+        }
+        if (!isSingleVar) throw new Error("solve: second argument must be a single variable (or a matrix, for a system)");
+        return newtonSolve(arg1, varName, vars, funcs);
+      }
 
       // Loosest-binding level: a left-to-right chain of + and -.
       function parseExpr() {
@@ -610,6 +866,33 @@
         var v = parseUnary();
         if (eat("^")) {
           skipWs();
+          // A matrix base reuses this same "^" for exactly the two
+          // operations this app implements for a matrix — ^T for
+          // transpose, ^-1 (or ^{-1}) for inverse — rather than a typed
+          // function name: this is literally how Mathcad itself
+          // displays both (real toolbar operators there, not words),
+          // and it sidesteps a brand-new MathQuill-recognition problem
+          // entirely (see the det/trace design note in parseAtom below:
+          // MathQuill's autoOperatorNames table can't safely be
+          // extended with new multi-letter words like "transpose" or
+          // "inverse" — checked empirically, same standard as every
+          // other autoOperatorNames claim in this file). The literal
+          // identifier "T" is intercepted here BEFORE it's ever looked
+          // up as a variable — safe because this branch only runs when
+          // the base already evaluated to a matrix, so an ordinary
+          // scalar "x^T" with T a real variable is completely
+          // unaffected (that path never reaches here).
+          if (isMatrixValue(v)) {
+            if (peek() === "{") {
+              var expText = parseGroup();
+              if (/^\s*T\s*$/.test(expText)) return transposeMatrix(v);
+              if (evalSub(expText) === -1) return inverseMatrix(v);
+              throw new Error("a matrix only supports ^T (transpose) or ^-1 (inverse)");
+            }
+            if (peek() === "T") { pos++; return transposeMatrix(v); }
+            if (parseUnary() === -1) return inverseMatrix(v);
+            throw new Error("a matrix only supports ^T (transpose) or ^-1 (inverse)");
+          }
           var exp = peek() === "{" ? evalSub(parseGroup()) : parseUnary();
           v = broadcast(v, exp, function (b, e) { return Math.pow(b, e); });
         }
@@ -678,6 +961,15 @@
         for (var bi = 0; bi < NATIVE_BUILTINS.length; bi++) {
           if (eat(NATIVE_BUILTINS[bi][0])) return callBuiltin(NATIVE_BUILTINS[bi][1]);
         }
+        // \det: unlike transpose/inverse (handled via ^T/^-1 in
+        // parsePow, precisely to avoid this), "det" IS one of
+        // MathQuill's native auto-recognized operator names (\det is a
+        // standard LaTeX macro, same tier as \sin/\ln — confirmed
+        // empirically the same way as every other NATIVE_BUILTINS
+        // entry), so a bare typed "det(" is safe and reads naturally.
+        // Its argument is a matrix, not a scalar, so it goes through
+        // callMatrixFn() rather than callBuiltin()/broadcastUnary().
+        if (eat("\\det")) return callMatrixFn(determinantOf);
         if (eat("\\operatorname{")) {
           var opEnd = src.indexOf("}", pos);
           if (opEnd === -1) throw new Error("unterminated \\operatorname{");
@@ -685,6 +977,38 @@
           if (!WRAPPED_BUILTINS.hasOwnProperty(opName)) throw new Error("unknown function " + opName);
           pos = opEnd + 1;
           return callBuiltin(WRAPPED_BUILTINS[opName]);
+        }
+        // "trace" and "solve" are NOT in MathQuill's own auto-operator-
+        // name list (checked empirically against the shipped
+        // mathquill.min.js the same way every autoOperatorNames claim
+        // in this file is — see PROGRESS.md/TODO.md's matrix-functions
+        // entry): typing either one live renders as separate italic
+        // single-letter variables (t,r,a,c,e,...), with no distinguishing
+        // mark at all, unlike "det"/"sin"/etc. above. Rather than fight
+        // that (MQ.config({autoOperatorNames:...}) replaces the whole
+        // table and there is no reachable reference to extend it in
+        // place instead — same conclusion as the comment by `var MQ`
+        // above, re-confirmed here for these two specific words), these
+        // are matched as a literal substring here, but ONLY when
+        // immediately followed by a call's opening paren. That gate is
+        // the actual safety net against the same misreading risk the
+        // "asin" note above calls out (a real variable product that
+        // happens to spell one of these words): it would take spelling
+        // out that exact run of single-letter variables AND immediately
+        // opening a call-shaped paren right after, which is far less
+        // likely than a short, common collision like "a*sin(...)"
+        // (already rejected there for exactly this reason) — accepted
+        // here because there's no autoOperatorNames-shaped alternative
+        // at all for a function name this app needs that MathQuill
+        // doesn't already know. The field will show these italicized
+        // (unlike "det"), a cosmetic gap, not a correctness one.
+        if (src.startsWith("trace", pos) && (src.startsWith("(", pos + 5) || src.startsWith("\\left(", pos + 5))) {
+          pos += 5;
+          return callMatrixFn(traceOf);
+        }
+        if (src.startsWith("solve", pos) && (src.startsWith("(", pos + 5) || src.startsWith("\\left(", pos + 5))) {
+          pos += 5;
+          return parseSolveCall();
         }
         // A variable (a single Latin letter or a Greek command token —
         // see matchIdentifierAt()) or a user-defined function call.
@@ -807,6 +1131,25 @@
       var stop = indexOf(line);
       for (var k = 0; k < stop; k++) {
         var l = lines[k];
+        // A named matrix line ("A:[" — see convertMathToMatrix()) is a
+        // real value too, the same way a "x:=3" math line is: read its
+        // grid of per-cell MathQuill fields into a plain 2D array of
+        // numbers and store it as a matrix value (see makeMatrix()/
+        // isMatrixValue() above evaluateLatex()). An UNNAMED matrix
+        // (l.name is null — the plain "[" trigger, unchanged from
+        // before this feature) is still just a standalone typeset
+        // widget, exactly as before, and falls through to be skipped by
+        // the `l.type !== "math"` check below, same as any other
+        // non-math line.
+        if (l.type === "matrix" && l.name) {
+          try {
+            var mrows = l.rows.map(function (row) {
+              return row.map(function (cell) { return evaluateLatex(cell.latex(), vars, funcs); });
+            });
+            vars[l.name] = makeMatrix(mrows);
+          } catch (e) { /* skip bad/circular matrix defs, same as any other definition */ }
+          continue;
+        }
         if (l.type !== "math") continue;
         var latex = l.mathField.latex();
         var lhs = parseDefinitionLHS(latex);
@@ -872,8 +1215,60 @@
       try {
         var defs = collectDefinitions(line);
         var result = evaluateLatex(exprLatex, defs.vars, defs.funcs);
-        line.mathField.typedText(formatNumber(result));
+        if (isMatrixValue(result)) appendMatrixResult(line, result.rows);
+        else line.mathField.typedText(formatNumber(result));
       } catch (e) { /* leave just the "=" */ }
+    }
+
+    // Renders a matrix-valued "=" result (transpose(A), A^T, A^-1, ...)
+    // as an actual typeset matrix, appended as a sibling of the line's
+    // own MathQuill field rather than typed into it.
+    //
+    // This is a deliberate pivot from the original "unvalidated" idea
+    // in TODO.md (write matrixLatex()'s "\begin{bmatrix}...\end{bmatrix}"
+    // string into the field via MathField.write()) — checked
+    // empirically (a throwaway MathField, write() with that exact
+    // string, then reading .latex() back) before writing any of this:
+    // this bundled MathQuill build has NO "bmatrix"/"array" environment
+    // support at all (grepped mathquill.min.js for every literal
+    // "\command" token it defines — "matrix"/"array" never appear), so
+    // write() with that string silently leaves the field empty rather
+    // than rendering anything. matrixLatex() producing that string is
+    // still correct and is kept exactly as-is — it's only ever handed
+    // to the C++ Backend for export, which has a real LaTeX engine
+    // behind it, not MathQuill.
+    //
+    // The actual mechanism: reuse the exact same bracket+grid DOM/CSS
+    // an editable matrix LINE already uses (see convertToMatrix() et
+    // al.), just built here as a small read-only widget instead of a
+    // whole line, with each cell rendered via MQ.StaticMath (display-
+    // only MathQuill, never focusable/editable) instead of MQ.MathField.
+    function appendMatrixResult(line, rows) {
+      var wrap = document.createElement("span");
+      wrap.className = "result-matrix";
+      var leftBracket = document.createElement("span");
+      leftBracket.className = "matrix-bracket matrix-bracket-left";
+      var grid = document.createElement("span");
+      grid.className = "matrix-grid";
+      var cols = rows.length ? rows[0].length : 0;
+      grid.style.gridTemplateColumns = "repeat(" + cols + ", minmax(1.2em, max-content))";
+      var rightBracket = document.createElement("span");
+      rightBracket.className = "matrix-bracket matrix-bracket-right";
+      rows.forEach(function (row, r) {
+        row.forEach(function (val, c) {
+          var cellEl = document.createElement("span");
+          cellEl.className = "matrix-cell";
+          cellEl.style.gridRow = r + 1;
+          cellEl.style.gridColumn = c + 1;
+          grid.appendChild(cellEl);
+          MQ.StaticMath(cellEl).latex(formatNumber(val));
+        });
+      });
+      wrap.appendChild(leftBracket);
+      wrap.appendChild(grid);
+      wrap.appendChild(rightBracket);
+      line.el.appendChild(wrap);
+      line.resultMatrixEl = wrap;
     }
 
     // The single place that types one character into a math line's field,
@@ -900,12 +1295,32 @@
       else if (ch === "|") mathField.cmd("\\nthroot");
       else if (ch === "=") {
         var exprLatex = mathField.latex();
+        // A line that's ALSO a definition so far ("name:=rhs" typed,
+        // then "=") should show the value just defined, not fail
+        // trying to evaluate "name" as though it already had one —
+        // collectDefinitions() never hits this (it already strips the
+        // "name:=" prefix via parseDefinitionLHS() before evaluating
+        // the rhs); this mirrors that same stripping here so "=" on
+        // this kind of line evaluates the RHS, the same thing the name
+        // is about to be bound to, rather than the whole "name:=rhs"
+        // text (where "name" reads as an undefined reference to
+        // itself). Found live while testing a matrix-valued definition
+        // ("B:=A^T=") — but it's not matrix-specific: a bare scalar
+        // ("x:=5=") hit the exact same failure before this fix, this
+        // combination (define-and-immediately-show on one line) simply
+        // hadn't been exercised before. A function definition ("f(x):=
+        // ...") isn't affected either way — parseDefinitionLHS() only
+        // recognizes a plain "name:=", so afterName here won't start
+        // with ":=" for one, and exprLatex is used as-is, same as
+        // before this fix.
+        var lhsSoFar = parseDefinitionLHS(exprLatex);
+        var toEval = (lhsSoFar && lhsSoFar.rest.indexOf(":=") === 0) ? lhsSoFar.rest.slice(2) : exprLatex;
         // Jump out of whatever block the cursor is sitting in (e.g. a root's
         // radicand) first, so "=" and the result land after the whole
         // expression instead of extending the root's bar over them too.
         mathField.moveToRightEnd();
         mathField.typedText("=");
-        evaluateAndAppend(line, exprLatex);
+        evaluateAndAppend(line, toEval);
       } else mathField.typedText(ch);
     }
 
@@ -925,7 +1340,19 @@
         handlers: {
           enter: function () { onEnter(line); },
           deleteOutOf: function (dir) { onDeleteOutOf(line, dir); },
-          moveOutOf: function (dir) { onMoveOutOf(line, dir); }
+          moveOutOf: function (dir) { onMoveOutOf(line, dir); },
+          // A matrix-valued "=" result (see appendMatrixResult()) is a
+          // separate DOM sibling, not part of the field's own LaTeX, so
+          // it doesn't automatically disappear the way a scalar result
+          // does when the field it was typed into gets edited. "edit"
+          // fires on every content change to this field, live keystroke
+          // or programmatic (typedText/cmd) alike, so any edit after a
+          // matrix result was shown — including backspacing the "="
+          // that produced it — clears the now-stale widget; retyping
+          // "=" recomputes and re-appends a fresh one.
+          edit: function () {
+            if (line.resultMatrixEl) { line.resultMatrixEl.remove(); line.resultMatrixEl = null; }
+          }
         }
       });
       line.mathField = mathField;
@@ -1057,6 +1484,7 @@
       el._line = line;
       delete line.rows;
       delete line.grid;
+      delete line.name;
       wireLineKeydown(line);
       wirePendingInput(line);
       return line;
@@ -1086,17 +1514,29 @@
       }
     }
 
-    // Turns a pending line into a matrix: swaps its plain div for the
-    // bracket+grid structure (see the .matrix-line CSS), then adds one
-    // empty row with one empty cell and focuses it — the starting point
-    // for a brand-new 1x1 matrix the user can grow with "," and ";".
-    function convertToMatrix(line) {
+    // Shared by convertToMatrix() (unnamed, "[" on a pending line) and
+    // convertMathToMatrix() (named, "A:[" on a math line already
+    // showing "A:="): builds the bracket+grid DOM structure (see the
+    // .matrix-line CSS) and, when `name` is given, a label in front of
+    // it ("A := "), mirroring how a graph line's "y ="/"z =" label
+    // (yLabelEl) sits to the left of its own field. Does not add any
+    // rows/cells itself — every caller follows this with addRow()+
+    // addCellToRow() for the starting 1x1 cell.
+    function buildMatrixContainer(line, name) {
       var container = document.createElement("div");
       container.className = "line matrix-line";
       line.el.replaceWith(container);
       line.el = container;
       line.type = "matrix";
       line.rows = [];
+      line.name = name || null;
+
+      if (line.name) {
+        var nameLabel = document.createElement("span");
+        nameLabel.className = "matrix-name-label";
+        nameLabel.textContent = line.name + " := ";
+        container.appendChild(nameLabel);
+      }
 
       var leftBracket = document.createElement("div");
       leftBracket.className = "matrix-bracket matrix-bracket-left";
@@ -1108,17 +1548,43 @@
       container.appendChild(grid);
       container.appendChild(rightBracket);
       line.grid = grid;
+    }
 
+    // Turns a pending line into an UNNAMED matrix: Mathcad's own bare
+    // "[" shortcut (see wirePendingInput()). Adds one empty row with one
+    // empty cell and focuses it — the starting point for a brand-new
+    // 1x1 matrix the user can grow with "," and ";". Can't be referenced
+    // from any later line (see collectDefinitions()) — only a NAMED
+    // matrix (convertMathToMatrix() below) can.
+    function convertToMatrix(line) {
+      buildMatrixContainer(line, null);
       var r = addRow(line);
       addCellToRow(line, r).focus();
     }
 
-    // The LaTeX form used for export: a standard bmatrix environment.
+    // Turns an in-progress definition ("A:=", a math line showing just
+    // an identifier name and ":=" so far — see the global keydown
+    // listener's "[" handling below) into a NAMED matrix: the Mathcad-
+    // style equivalent of "A:3" becoming the math line "A := 3", just
+    // for a matrix value instead of a scalar one. A named matrix line
+    // IS a real value collectDefinitions() reads (see its "l.name"
+    // check), the same way "A:=3" defines a usable variable.
+    function convertMathToMatrix(line, name) {
+      buildMatrixContainer(line, name);
+      var r = addRow(line);
+      addCellToRow(line, r).focus();
+    }
+
+    // The LaTeX form used for export: a standard bmatrix environment,
+    // prefixed with "name:=" for a named matrix (matching how every
+    // other definition exports: see collectDocument()'s "math" case for
+    // a plain line, which already includes its own ":=").
     function matrixLatex(line) {
       var rows = line.rows.map(function (row) {
         return row.map(function (field) { return field.latex(); }).join(" & ");
       });
-      return "\\begin{bmatrix}" + rows.join(" \\\\ ") + "\\end{bmatrix}";
+      var body = "\\begin{bmatrix}" + rows.join(" \\\\ ") + "\\end{bmatrix}";
+      return line.name ? line.name + ":=" + body : body;
     }
 
     // A graph always plots over this fixed, symmetric x-domain — no axis-
@@ -1693,6 +2159,23 @@
       var hostLineEl = e.target.closest ? e.target.closest(".math-line, .graph-line") : null;
       var hostLine = hostLineEl && hostLineEl._line;
       if (!hostLine) return;
+
+      // "A:[" names a matrix, the same spirit as "A:3" already becoming
+      // "A := 3" (see insertChar()'s ":" handling): only when the field
+      // shows EXACTLY an identifier followed by ":=" so far — nothing
+      // else typed yet — does "[" convert the whole line into a named
+      // matrix instead of being typed literally. Anything else (a bare
+      // "[" with no name in progress, "[" in the middle of some other
+      // expression, ...) falls through to MathQuill's own default "["
+      // handling (auto-matched bracket pair), completely unaffected.
+      if (e.key === "[" && hostLine.type === "math") {
+        var lhsSoFar = parseDefinitionLHS(hostLine.mathField.latex());
+        if (lhsSoFar && lhsSoFar.rest === ":=") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          convertMathToMatrix(hostLine, lhsSoFar.name);
+          return;
+        }
+      }
 
       // These keys have their own meaning to MathQuill (":" and "=" are
       // unbound, "\" opens its LaTeX-command-name entry mode, ";" would
