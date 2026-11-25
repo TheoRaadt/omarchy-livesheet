@@ -544,3 +544,20 @@ trap and its fix.
      `evaluateLatex()` is a program's own condition field, which
      deliberately leaves `"="` un-intercepted (MathQuill types it
      literally) for exactly this reason.
+- **2026-11-25 (manager review finding, not caught by the implementing
+  session)** — when adding a new `Ctrl+<letter>`/`Ctrl+Shift+<letter>`
+  binding, don't copy the Greek-letter/integral-trigger pattern of only
+  calling `preventDefault()`/`stopImmediatePropagation()` *inside* the
+  branch where a usable target actually resolves. That pattern is a
+  deliberate, accepted tradeoff for those specific keys (a miss just
+  opens DevTools or does nothing). It is NOT safe to copy reflexively
+  for every new binding — program blocks' `Ctrl+Shift+R` collides with
+  Chromium's own hard-reload shortcut, and this app has zero save/
+  persistence, so letting it through when focus was anywhere other
+  than a program field would have silently wiped the whole notebook.
+  Check what the key combo's browser/Chromium default actually is
+  before deciding whether "let it through when nothing resolves" is an
+  acceptable tradeoff or a real data-loss risk; when in doubt, call
+  `preventDefault()`/`stopImmediatePropagation()` unconditionally the
+  moment the modifier+key matches, before checking whether there's a
+  resolved target to act on.
