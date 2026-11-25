@@ -8,32 +8,10 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-25 (`e`/`π` built-in constants shipped — see
-`PROGRESS.md`). Everything below this line is still open.
+Last updated: 2026-11-25 (`e`/`π` built-in constants and scalar-matrix
+multiplication shipped — see `PROGRESS.md`). Everything below this
+line is still open.
 
-## Queued — scalar-matrix multiplication (bug report, small)
-
-User-reported gap: `2*A`/`A*2` (a scalar times a named matrix) doesn't
-work. Confirmed in the code, not just the report — this is a deliberate
-scope limit from the matrix-functions work, not an oversight that
-regressed: `broadcast()` (`src/notebook.html`, search
-`"matrix arithmetic (other than ^T, ^-1, det, trace) is not supported"`)
-throws for *any* arithmetic operator when either operand is a matrix
-value, by design at the time (only `^T`/`^-1`/`det`/`trace` were in
-scope — see `PROGRESS.md`'s matrix-functions entry). Scalar multiplication
-is a much more basic, expected operation than that original scope
-suggests, though — worth fixing.
-
-**Likely fix, not yet built**: before `broadcast()`'s current matrix
-guard throws, check for the specific case of one operand being a plain
-number and the other a matrix value (via `isMatrixValue()`) when the
-operator is `*` — return a new matrix (`makeMatrix()`) with the scalar
-multiplied into every cell, elementwise. Leave every *other* matrix-
-operand case (`+`, `-`, matrix-times-matrix, `/`) throwing exactly as
-now — scope this narrowly to scalar multiplication only, not general
-matrix arithmetic, unless asked for more. Display reuses the existing
-`appendMatrixResult()` mechanism already built for `transpose`/`inverse`
-results.
 ## Queued — symbolic calculus (derivatives & integrals; big, needs its own design pass)
 
 Originally bundled into "Batch 2" as plain numeric derivatives/

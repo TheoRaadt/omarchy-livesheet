@@ -750,3 +750,24 @@ below was verified by building (`bin/build`), running the backend tests
   lines `@e^x` (2D) and `e^x - y\cdot\pi` (3D) both sample and render
   correctly; `f(e):=e+1` then `f(10)=` → `11`, confirming a function
   parameter named `e` shadows the constant inside that function.
+- 2026-11-25: Scalar-matrix multiplication (`2*A`/`A*2`, either
+  operand order, including implicit-multiplication juxtaposition like
+  `2A`). `broadcast()` (`src/notebook.html`) gained a 4th `opName`
+  parameter, passed as `"*"` only from `parseTerm()`'s two actual
+  multiplication branches; when one operand is a matrix
+  (`isMatrixValue()`) and the other a plain number, it now returns a
+  new matrix (`makeMatrix()`) with the scalar multiplied into every
+  cell, instead of throwing. Every other matrix-operand combination
+  (`+`, `-`, matrix×matrix, `/` either direction) still throws the
+  same pre-existing "matrix arithmetic ... is not supported" error,
+  confirmed by re-testing each one, not just assuming the scoped fix
+  didn't touch them. Display needed no new code — `evaluateAndAppend()`
+  already routes any matrix result through the existing
+  `appendMatrixResult()` widget. `bin/build`/`bin/test` clean (7/7).
+  Verified live (headless Chromium over the DevTools Protocol,
+  `claude-in-chrome` wasn't connected in this environment — see
+  `.claude/agents/frontend.md`'s 2026-11-25 fallback recipe): built a
+  real named matrix `A` through the app's own matrix-entry keyboard
+  path, then confirmed `2*A=` and `A*2=` both produce `[[2,4],[6,8]]`
+  from `A=[[1,2],[3,4]]`; `A+A=`, `A*A=` (matrix×matrix), `A/2=`, and
+  `2/A=` all still produce no matrix result (still throw), unchanged.

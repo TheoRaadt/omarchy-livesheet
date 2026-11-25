@@ -357,7 +357,7 @@
     // once — this is the actual "evaluate once per range value" behavior
     // that makes a range variable useful, applied uniformly rather than
     // needing special-casing at every call site below.
-    function broadcast(a, b, op) {
+    function broadcast(a, b, op, opName) {
       // A matrix value (see makeMatrix()/isMatrixValue() below) is a
       // tagged object, not a bare array, specifically so it's never
       // mistaken for a range here — broadcasting +/-/* elementwise over
@@ -369,7 +369,25 @@
       // JS's own "+" on two plain objects (string concatenation, not a
       // thrown error — technically harmless since formatNumber()'s
       // isFinite() check would still catch it, but a worse message).
+      //
+      // The one deliberate exception: a plain number times a matrix
+      // (either order — "2*A" or "A*2", including implicit-
+      // multiplication juxtaposition like "2A") is scalar multiplication,
+      // which is basic/expected enough to support even though general
+      // matrix arithmetic (+, -, matrix*matrix, any /) still isn't.
+      // opName is only ever passed as "*" by parseTerm()'s multiplication
+      // branches below, so every other operator falls straight through
+      // to the throw exactly as before.
       if (isMatrixValue(a) || isMatrixValue(b)) {
+        if (opName === "*") {
+          var matrix = isMatrixValue(a) ? a : b;
+          var scalar = isMatrixValue(a) ? b : a;
+          if (typeof scalar === "number") {
+            return makeMatrix(matrix.rows.map(function (row) {
+              return row.map(function (cell) { return cell * scalar; });
+            }));
+          }
+        }
         throw new Error("matrix arithmetic (other than ^T, ^-1, det, trace) is not supported");
       }
       if (Array.isArray(a) && Array.isArray(b)) {
@@ -948,7 +966,7 @@
       function parseTerm() {
         var v = parsePow();
         for (;;) {
-          if (eat("\\cdot") || eat("\\times") || eat("*")) v = broadcast(v, parsePow(), function (x, y) { return x * y; });
+          if (eat("\\cdot") || eat("\\times") || eat("*")) v = broadcast(v, parsePow(), function (x, y) { return x * y; }, "*");
           else if (eat("\\div")) v = broadcast(v, parsePow(), function (x, y) { return x / y; });
           else {
             skipWs();
@@ -958,7 +976,7 @@
               src.startsWith("\\operatorname{", pos) ||
               matchIdentifierAt(src, pos) !== null ||
               NATIVE_BUILTINS.some(function (b) { return src.startsWith(b[0], pos); });
-            if (atomAhead) v = broadcast(v, parsePow(), function (x, y) { return x * y; });
+            if (atomAhead) v = broadcast(v, parsePow(), function (x, y) { return x * y; }, "*");
             else break;
           }
         }
