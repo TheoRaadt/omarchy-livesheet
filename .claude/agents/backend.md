@@ -86,3 +86,16 @@ Append a dated bullet here whenever you hit something non-obvious while
 actually working in this domain — so far nothing has been added from a
 real backend session; the section above covers what the code already
 knew going in.
+
+**2026-11-25: the "Already documented in the code" section above has
+been extracted into a project skill**, `livesheet-backend-gotchas`
+(`.claude/skills/`), so it loads automatically when relevant instead of
+requiring a read through this file — covers the `pdflatex` exit-code
+trap, the `colors.toml`-gets-replaced-not-edited `QFileSystemWatcher`
+gotcha, the polled-`QProcess`-needs-its-own-timeout pattern, and when
+QtTest alone isn't sufficient. Keep appending dated bullets here as the
+running historical log once real backend sessions happen — when one
+turns out to be a generally-reusable pattern (not a one-off fact), fold
+it into that skill too, the same way frontend's lessons were (see
+`livesheet-live-verify`/`livesheet-add-ui-feature`/
+`livesheet-extend-evaluator` for the parallel frontend-side skills).
