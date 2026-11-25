@@ -382,3 +382,63 @@ trap and its fix.
   with `target` overridden via `Object.defineProperty` — the app's
   listener is on `document` in capture phase, so it sees the event
   regardless of which element it was dispatched from/to.
+- **2026-11-25** — Built symbolic indefinite integration (phase 2 of
+  symbolic calculus) on top of phase 1's AST exactly as instructed, no
+  redesign. Two non-obvious findings from live-testing the trigger
+  design in a throwaway headless-Chromium MathQuill harness (the
+  jquery+mathquill.min.js one, see the 2026-11-24 entry above) before
+  writing any app code:
+  1. `mathField.cmd("\\int")` on this project's actual bundled MathQuill
+     build inserts a bare, slot-less symbol — confirmed NOT a
+     sum/product-style template with sub/superscript boxes the way
+     `\Sigma`/`\Pi` are (ruling out "leave an indefinite integral's
+     bounds empty" as a design, since there are no bounds slots at all
+     to leave empty).
+  2. That bare-symbol-ness bites immediately: typing `\int` then `1/x`
+     with nothing between them makes MathQuill's own auto-fraction
+     grab-back swallow the `\int` symbol itself into the numerator —
+     `cmd("\\int"); typedText("1/x")` produces `\frac{\int1}{x}`, NOT
+     `\int\frac{1}{x}`. A typed `+` stops that same grab-back (confirmed:
+     `typedText("2+1/x")` correctly numerators only the `1`), but a bare
+     command atom with no operator next to it doesn't act as a boundary.
+     Fixed by having the Ctrl+Shift+I keybinding insert `\int` immediately
+     followed by `typedText("(")` — MathQuill's normal auto-paired
+     `\left(\right)` then gives the integrand's own internal fractions a
+     block boundary to stop at, the same way `+` already does. This
+     makes the rendered trigger shape `\int\left(f(x)\right)dx` rather
+     than bare `\int f(x)\,dx` — a deliberate, documented deviation from
+     the "natural" rendering suggested in the task, justified by this
+     concrete MathQuill behavior, not a stylistic choice.
+  3. Mathcad's own real keyboard convention for the integral operator
+     (PTC docs, web-searched) is version-dependent: legacy Mathcad uses
+     `Ctrl+I` for the indefinite integral (`&` for definite), while
+     later Prime-era Mathcad uses `Ctrl+Shift+I` for the integral
+     operator generally. `Ctrl+I` alone is already claimed by this app's
+     Greek-letter feature (`GREEK_LOWER`'s `i` → `\iota`), so
+     `Ctrl+Shift+I` was used instead — it's both free (`GREEK_UPPER` has
+     no `i` entry) and is itself a genuine Mathcad convention for this
+     operator, not an arbitrary pick to work around the collision.
+  4. `Ctrl+Shift+I` is Chromium's own "open DevTools" shortcut, which
+     would otherwise fire inside the app's `QtWebEngineView` — handled
+     the same way this app already overrides `Ctrl+S`/`Ctrl+Q`'s browser
+     defaults (always `preventDefault()`/`stopImmediatePropagation()`
+     when actually handled), not a new concern.
+  5. The derivative trigger's own "fresh pending line has no MathQuill
+     field yet" gap-fix pattern (2026-11-24 entries above) had to be
+     copied verbatim for this new Ctrl+Shift+I handler too — each
+     Ctrl+`<key>` shortcut needs its own copy of that fallback (convert
+     the line via `convertToMath(line, "")`, then act on the field that
+     creates), it is NOT something fixing it once for Greek letters
+     covers for every future modifier-key shortcut.
+  6. Verified a genuinely different failure mode than anything in phase
+     1: a term the engine can't integrate (`\tan`, `\ln`, `\log`, or a
+     non-linear composition like `2x\sin(x^2)`) must fail the WHOLE
+     integral, not partially integrate and leave a dangling piece.
+     Didn't need any special plumbing for this — every integration rule
+     above is written to just let an unsupported sub-case's exception
+     propagate uncaught through the recursive `add`/`sub`/`mul` cases,
+     so the top-level `try`/`catch` around the whole trigger (same one
+     the derivative trigger already uses) naturally catches it at
+     whatever depth it was thrown, leaving the line exactly as typed.
+     Confirmed live for both `\tan(x)+x` (nested in a sum) and the
+     standalone non-linear case.

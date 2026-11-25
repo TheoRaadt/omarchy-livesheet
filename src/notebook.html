@@ -1392,19 +1392,23 @@
       return String(Math.round(x * 1e6) / 1e6);
     }
 
-    // --- Symbolic differentiation (TODO.md's "symbolic calculus" item;
-    // this is phase 1 — derivatives only, integrals are a separate
-    // follow-up) --------------------------------------------------------
+    // --- Symbolic differentiation and integration (TODO.md's "symbolic
+    // calculus" item; phase 1, derivatives, shipped first — see
+    // matchDerivativeTrigger() below. Phase 2, indefinite integrals, is
+    // matchIntegralTrigger()/integrate(), further down this same
+    // section) --------------------------------------------------------
     //
     // Everything evaluateLatex() does above goes straight from LaTeX to
-    // a NUMBER — there's no expression-tree anywhere in this file, and a
-    // symbolic derivative needs one (apply a rule, get back another
-    // expression, not a value). This section is a brand-new, ADDITIVE
-    // layer used ONLY by the derivative trigger (matchDerivativeTrigger()/
-    // insertChar()'s "=" handling below): it does not touch evaluateLatex()
-    // or collectDefinitions(), shares no mutable state with them, and
-    // every existing math/matrix/graph line's numeric evaluation is
-    // completely unaffected — confirmed live, see PROGRESS.md.
+    // a NUMBER — there's no expression-tree anywhere in this file, and
+    // both symbolic derivatives and integrals need one (apply a rule,
+    // get back another expression, not a value). This section is a
+    // brand-new, ADDITIVE layer used ONLY by the derivative/integral
+    // triggers (matchDerivativeTrigger()/matchIntegralTrigger(), wired
+    // up in insertChar()'s "=" handling below): it does not touch
+    // evaluateLatex() or collectDefinitions(), shares no mutable state
+    // with them, and every existing math/matrix/graph line's numeric
+    // evaluation is completely unaffected — confirmed live, see
+    // PROGRESS.md.
     //
     // Node shape (the thing a later integral-phase delegation should
     // build on — kept deliberately small, matching TODO.md's agreed v1
@@ -1780,6 +1784,260 @@
       throw new Error("cannot render node type " + node.type);
     }
 
+    // --- Symbolic indefinite integration (phase 2) ----------------------
+    //
+    // Reuses every piece of phase 1's AST layer above completely as-is
+    // (node shapes, parseLatexToTree(), containsVar(), simplifyTree(),
+    // treeToLatex(), appendFormulaResult() below) — this is purely new
+    // functions added on top, same "brand-new additive layer" posture as
+    // phase 1 itself. Integration is NOT differentiate() run backwards:
+    // it needs real technique selection (which rule even applies to a
+    // given integrand), so this is its own small engine, scoped to
+    // exactly what TODO.md agreed: the power rule (n != -1, plus the
+    // n=-1 -> ln(x) special case), sin/cos/exp, a constant-base
+    // exponential (b^x -> b^x/ln(b), e^x special-cased to skip the
+    // ln(e) factor), linearity (sum/difference of integrable terms),
+    // constant-factor pull-out, and "simple composition" ONLY via linear
+    // substitution f(ax+b) — never a general u-substitution. \tan/\ln/
+    // \log are explicitly OUT OF SCOPE (not "not yet implemented" —
+    // deliberately excluded, see TODO.md: \tan needs a substitution
+    // producing a non-elementary intermediate without more machinery,
+    // \ln needs integration by parts, both excluded on purpose this
+    // phase). Anything this engine can't handle THROWS, uncaught, all
+    // the way up through every recursive call (never swallowed partway
+    // through a sum/product) so the trigger's try/catch below leaves the
+    // WHOLE integral unevaluated — same "leave it alone, don't guess"
+    // failure UX as a numeric line referencing an undefined variable.
+
+    // Does `node` equal a*v + b for some a/b constant w.r.t. v (not
+    // necessarily literal numbers)? Returns {a, b} tree nodes, or null
+    // if `node` isn't recognizably linear in v. Deliberately structural
+    // and narrow (var-is-v, constant, neg, add, sub, mul-by-constant) —
+    // NOT a general "solve for linear form" routine; this is exactly
+    // what bounds the "simple composition" scope to f(ax+b) and nothing
+    // more open-ended (e.g. it correctly returns null for x^2 inside a
+    // sin(), which is what makes the non-linear-composition case below
+    // fail gracefully instead of guessing).
+    function linearCoeffs(node, v) {
+      if (node.type === "var" && node.name === v) return { a: numNode(1), b: numNode(0) };
+      if (!containsVar(node, v)) return { a: numNode(0), b: node };
+      if (node.type === "neg") {
+        var inner = linearCoeffs(node.arg, v);
+        return inner ? { a: negNode(inner.a), b: negNode(inner.b) } : null;
+      }
+      if (node.type === "add") {
+        var l = linearCoeffs(node.left, v), r = linearCoeffs(node.right, v);
+        return (l && r) ? { a: addNode(l.a, r.a), b: addNode(l.b, r.b) } : null;
+      }
+      if (node.type === "sub") {
+        var l2 = linearCoeffs(node.left, v), r2 = linearCoeffs(node.right, v);
+        return (l2 && r2) ? { a: subNode(l2.a, r2.a), b: subNode(l2.b, r2.b) } : null;
+      }
+      if (node.type === "mul") {
+        if (!containsVar(node.left, v)) {
+          var ri = linearCoeffs(node.right, v);
+          return ri ? { a: mulNode(node.left, ri.a), b: mulNode(node.left, ri.b) } : null;
+        }
+        if (!containsVar(node.right, v)) {
+          var li = linearCoeffs(node.left, v);
+          return li ? { a: mulNode(node.right, li.a), b: mulNode(node.right, li.b) } : null;
+        }
+        return null;
+      }
+      return null;
+    }
+
+    // Multiplies a pulled-out constant factor `k` onto an already-
+    // integrated `inner` result, folding a leading negation out front
+    // (mul(k, neg(a)) -> neg(mul(k, a))) rather than leaving a bare
+    // "k \cdot -a" in the rendered result. simplifyTree() deliberately
+    // has no general "pull negation out of a mul" fold (not its scope —
+    // phase 1 never needed one), so this is handled locally here
+    // instead of extending simplifyTree's own job. Runs simplifyTree()
+    // on `inner` FIRST because the shape integrateCall()'s sin/cos/exp
+    // rules actually build (e.g. div(neg(cos(x)), num(1)) for a plain
+    // "\int\sin(x)dx", before the division-by-1 fold has had a chance
+    // to run yet) isn't a bare neg() node until that fold happens —
+    // confirmed by a failing Node-level test before this call was added
+    // here (see this phase's PROGRESS.md entry).
+    function mulPullConst(k, inner) {
+      var s = simplifyTree(inner);
+      if (s.type === "neg") return negNode(mulNode(k, s.arg));
+      return mulNode(k, s);
+    }
+
+    // Reads a tree node as a plain numeric exponent, matching the same
+    // leniency parseLatexToTree's own parsePowT/parseUnaryT already
+    // produce: a typed "x^-1" parses as pow(x, neg(num(1))), NOT
+    // pow(x, num(-1)) — parseUnaryT wraps a leading "-" in its own
+    // neg() node rather than folding the sign into the literal. Returns
+    // the numeric value, or null if `node` isn't one of these two
+    // shapes, so a genuinely symbolic exponent (e.g. x^n) still fails
+    // gracefully instead of being misread as some specific number.
+    function numericExpValue(node) {
+      if (node.type === "num") return node.value;
+      if (node.type === "neg" && node.arg.type === "num") return -node.arg.value;
+      return null;
+    }
+
+    // sin/cos/exp standard forms, with linear substitution via
+    // linearCoeffs(). tan/ln/log are explicitly out of scope for this
+    // phase (see this section's header comment) — thrown here, caught
+    // by matchIntegralTrigger()'s caller's own try/catch, same
+    // "leave it alone" graceful-failure UX as everything else in this
+    // app's evaluation paths.
+    function integrateCall(node, v) {
+      var name = node.name, arg = node.arg;
+      if (name === "tan" || name === "ln" || name === "log") {
+        throw new Error("integration: \\" + name + " is out of scope for this phase");
+      }
+      if (name !== "sin" && name !== "cos" && name !== "exp") {
+        throw new Error("integration: don't know how to integrate " + name);
+      }
+      var lc = linearCoeffs(arg, v);
+      if (!lc) throw new Error("integration: non-linear composition for " + name + "(...) is not supported");
+      if (name === "sin") return divNode(negNode(callNode("cos", arg)), lc.a);
+      if (name === "cos") return divNode(callNode("sin", arg), lc.a);
+      return divNode(callNode("exp", arg), lc.a); // "exp"
+    }
+
+    // The actual integration engine — see this section's header comment
+    // for the agreed scope. Returns a brand-new tree, the antiderivative
+    // of `node` with respect to `v` (no "+C" — this is a formula result,
+    // same convention as phase 1's derivative; adding a constant of
+    // integration is a presentation choice left for later, not a
+    // correctness requirement of this engine).
+    function integrate(node, v) {
+      // Constant w.r.t. v (doesn't reference it anywhere, not just "is
+      // a literal number" — same distinction containsVar() already
+      // draws for phase 1's differentiate()): integral of a constant k
+      // is k*v. This also catches every "other variable" case (e.g.
+      // integrating "y" with respect to "x") the same way phase 1's
+      // differentiate() does.
+      if (!containsVar(node, v)) return mulNode(node, varNode(v));
+      switch (node.type) {
+        case "var": // node.name === v here (the other-variable case is constant, handled above)
+          return divNode(powNode(node, numNode(2)), numNode(2));
+        case "neg":
+          return negNode(integrate(node.arg, v));
+        case "add":
+          return addNode(integrate(node.left, v), integrate(node.right, v));
+        case "sub":
+          return subNode(integrate(node.left, v), integrate(node.right, v));
+        case "mul": {
+          if (!containsVar(node.left, v)) return mulPullConst(node.left, integrate(node.right, v));
+          if (!containsVar(node.right, v)) return mulPullConst(node.right, integrate(node.left, v));
+          // Both sides depend on v: this is the open-ended "recognize an
+          // arbitrary inner function's derivative as a factor" problem
+          // (e.g. 2x\sin(x^2)) — explicitly out of scope, see this
+          // section's header comment. Fail gracefully rather than guess.
+          throw new Error("integration: a product of two non-constant factors is not supported (not simple u-substitution)");
+        }
+        case "div":
+          // Rewrite a/b as a*b^-1 and reuse the mul (constant pull-out)
+          // and pow (power rule, including n=-1 -> ln) cases above/below
+          // — avoids a third copy of the same "is this side constant"
+          // logic for what's structurally the same question.
+          return integrate(mulNode(node.left, powNode(node.right, numNode(-1))), v);
+        case "pow": {
+          var baseHasV = containsVar(node.base, v), expHasV = containsVar(node.exp, v);
+          if (baseHasV && expHasV) {
+            throw new Error("integration: a variable base raised to a variable exponent (f(x)^g(x)) is not supported");
+          }
+          if (expHasV) {
+            // Constant-base exponential: b^f(x), f linear in v (covers
+            // both e^x and e^{2x} via the same path — "e" is just an
+            // ordinary var node to this layer, same as phase 1's own
+            // documented exponential-rule note).
+            var lcExp = linearCoeffs(node.exp, v);
+            if (!lcExp) throw new Error("integration: non-linear exponent is not supported");
+            var isE = node.base.type === "var" && node.base.name === "e";
+            var denom = isE ? lcExp.a : mulNode(callNode("ln", node.base), lcExp.a);
+            return divNode(node, denom);
+          }
+          // baseHasV, exponent constant: power rule, with linear
+          // substitution on the base. Scope deliberately excludes a
+          // non-numeric exponent (e.g. x^n for a symbolic n) — can't
+          // tell whether n=-1 without a literal value, so fail
+          // gracefully rather than guess.
+          var n = numericExpValue(node.exp);
+          if (n === null) {
+            throw new Error("integration: a non-numeric exponent on a variable base is not supported");
+          }
+          var lcBase = linearCoeffs(node.base, v);
+          if (!lcBase) throw new Error("integration: non-linear composition in a power's base is not supported");
+          if (n === -1) return divNode(callNode("ln", node.base), lcBase.a);
+          var np1 = n + 1;
+          return divNode(powNode(node.base, numNode(np1)), mulNode(numNode(np1), lcBase.a));
+        }
+        case "call":
+          return integrateCall(node, v);
+      }
+      throw new Error("integration: unsupported expression form");
+    }
+
+    // The user-facing trigger. Ctrl+Shift+I (see the keydown handler
+    // below) inserts "\int" followed immediately by an auto-paired "("
+    // — confirmed live (headless Chromium over the DevTools Protocol,
+    // loading this project's actual mathquill.min.js/jquery.min.js) that
+    // mathField.cmd("\\int") on a real MathQuill field inserts a bare,
+    // slot-less symbol — NOT a sum/product-style template with sub/
+    // superscript boxes the way \Sigma/\Pi are (ruling out the obvious
+    // "leave the bounds empty for an indefinite integral" approach,
+    // since there are no bounds slots to leave empty here at all) — and
+    // that typing a bare "(" right after it opens the exact same
+    // "\left(...\right)" auto-pairing every other typed paren in this
+    // app already gets (confirmed: cmd("\\int") then typedText("(")
+    // produces "\int\left(\right)" with the cursor positioned between
+    // them). The paren wrapper isn't cosmetic: also confirmed live that
+    // typing a "/" immediately after a bare "\int" with NO boundary in
+    // between makes MathQuill's own auto-fraction grab the "\int" symbol
+    // itself into the numerator (cmd("\\int") then typedText("1/x")
+    // produces "\frac{\int1}{x}", not "\int\frac{1}{x}" — MathQuill's
+    // "/" handler grabs back everything un-separated in the current
+    // block, and a bare symbol with no operator next to it doesn't stop
+    // that grab the way a "+" does). The paren group gives the
+    // integrand its own block boundary for that grab to stop at instead,
+    // which is what makes an integrand containing a fraction (the n=-1
+    // case, 1/x, specifically included) typeable at all. The resulting
+    // keystroke discipline this requires (exit a fraction/exponent with
+    // Right before typing the closing ")", so it skips over the pending
+    // auto-inserted "\right)" instead of opening a confusing SECOND
+    // nested paren) is not a new fragility this feature introduces —
+    // it's the exact same discipline every other nested MathQuill
+    // construct in this app already needs (see the "^ doesn't auto-exit"
+    // lesson in this agent's own notes), just applied to this new
+    // construct too.
+    //
+    // Detection is purely textual, same convention matchDerivativeTrigger()
+    // above already established: requires the whole expression to start
+    // with "\int" (so it can only ever be this feature — nothing else in
+    // this app ever emits "\int"), and to end with a literal "d"
+    // immediately followed by one identifier token (matchIdentifierAt())
+    // and nothing else after it — same "denominator" shape check
+    // matchDerivativeTrigger() uses, just anchored at the end of the
+    // string instead of inside a \frac{}{}'s second group. Whatever's
+    // between those two anchors — normally "\left(...\right)" from the
+    // auto-pairing above — is fed to parseLatexToTree() as-is: its own
+    // parenthesis handling in parseAtomT() already strips a leading
+    // "\left(...\right)"/"(...)" wrapper for free, so no separate brace/
+    // paren extractor is needed here the way matchDerivativeTrigger()
+    // needed extractBraceGroup() for \frac{}{}'s two explicit groups.
+    // Returns {varName, exprLatex} on a match, or null (so the caller
+    // falls through to the ordinary numeric evaluateLatex() path, same
+    // as it already does for anything else it can't evaluate) otherwise.
+    function matchIntegralTrigger(latex) {
+      if (latex.indexOf("\\int") !== 0) return null;
+      var body = latex.slice(4).replace(/\s+$/, "");
+      var dPos = body.lastIndexOf("d");
+      if (dPos < 0 || dPos === body.length - 1) return null;
+      var varTok = matchIdentifierAt(body, dPos + 1);
+      if (varTok === null || dPos + 1 + varTok.length !== body.length) return null;
+      var integrandLatex = body.slice(0, dPos).trim();
+      if (integrandLatex === "") return null;
+      return { varName: varTok, exprLatex: integrandLatex };
+    }
+
     // The user-facing trigger: Leibniz notation, typed exactly the way
     // this app's own "/" shortcut already behaves (MathQuill auto-opens
     // \frac{}{} on a typed "/" with no special-casing needed here) —
@@ -1840,13 +2098,14 @@
     // Leaves just the "=" if the expression can't be evaluated yet (e.g. it
     // references a variable that hasn't been defined above).
     //
-    // The derivative trigger is checked FIRST, before any of
-    // evaluateLatex()'s own numeric path runs at all — a line matching
-    // matchDerivativeTrigger() is routed entirely to the symbolic
-    // tree layer above (parse -> differentiate -> simplify -> render)
-    // and never reaches collectDefinitions()/evaluateLatex(), so an
-    // ordinary line (which never matches the trigger) takes the exact
-    // same path through this function it always has.
+    // The derivative and integral triggers are both checked FIRST,
+    // before any of evaluateLatex()'s own numeric path runs at all — a
+    // line matching either one is routed entirely to the symbolic tree
+    // layer above and never reaches collectDefinitions()/evaluateLatex(),
+    // so an ordinary line (which never matches either trigger) takes the
+    // exact same path through this function it always has. The two
+    // triggers' prefixes ("\frac{d}{..." vs "\int...") are mutually
+    // exclusive, so checking order between them doesn't matter.
     function evaluateAndAppend(line, exprLatex) {
       var deriv = matchDerivativeTrigger(exprLatex);
       if (deriv) {
@@ -1855,6 +2114,15 @@
           var dtree = simplifyTree(differentiate(tree, deriv.varName));
           appendFormulaResult(line, treeToLatex(dtree));
         } catch (e) { /* leave just the "=" , same as a numeric failure */ }
+        return;
+      }
+      var integ = matchIntegralTrigger(exprLatex);
+      if (integ) {
+        try {
+          var itree = parseLatexToTree(integ.exprLatex);
+          var rtree = simplifyTree(integrate(itree, integ.varName));
+          appendFormulaResult(line, treeToLatex(rtree));
+        } catch (e) { /* leave just the "=" , same as a numeric/derivative failure */ }
         return;
       }
       try {
@@ -2960,6 +3228,46 @@
           }
           return;
         }
+      }
+
+      // --- Symbolic integral trigger: Ctrl+Shift+I ---------------------
+      // Inserts a bare "\int" symbol followed by an auto-paired "(" (see
+      // matchIntegralTrigger()'s own comment above for why the paren is
+      // required, not cosmetic). Mathcad's OWN keyboard convention for
+      // the integral operator is Ctrl+I in its legacy versions (definite
+      // integral there is a separate "&" shortcut) and Ctrl+Shift+I in
+      // its later Prime-era versions (PTC's own docs, web-searched) —
+      // Ctrl+I here is already taken (GREEK_LOWER's "i" -> "\iota", see
+      // above), so Ctrl+Shift+I is used instead: it's free (GREEK_UPPER
+      // has no "i" entry) AND is Mathcad's own later-version convention
+      // for this exact operator, not an arbitrary pick. Always
+      // preventDefault()/stopImmediatePropagation() when handled, same
+      // as Ctrl+S/Ctrl+Q above overriding their own browser defaults —
+      // Ctrl+Shift+I is Chromium's own "open DevTools" shortcut, which
+      // would otherwise fire inside this QtWebEngineView.
+      if (mod && e.shiftKey && !e.altKey && (e.key === "i" || e.key === "I")) {
+        var intField = resolveMathField(e.target);
+        if (intField) {
+          e.preventDefault(); e.stopImmediatePropagation();
+          intField.cmd("\\int");
+          intField.typedText("(");
+          return;
+        }
+        // Same "fresh pending line has no field yet" gap the Greek-letter
+        // handler above already works around — see its own comment for
+        // why a Ctrl-modified key reaches here with no field to resolve
+        // to on a brand-new line, and why converting the line to math
+        // right here (rather than relying on wirePendingInput()'s
+        // buffered-replay path) is the fix.
+        var intPendingEl = e.target.closest ? e.target.closest(".pending") : null;
+        var intPendingLine = intPendingEl && intPendingEl._line;
+        if (intPendingLine && intPendingLine.type === "pending") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          convertToMath(intPendingLine, "");
+          intPendingLine.mathField.cmd("\\int");
+          intPendingLine.mathField.typedText("(");
+        }
+        return;
       }
 
       // Nothing below this point wants to intercept a Ctrl/Cmd combo

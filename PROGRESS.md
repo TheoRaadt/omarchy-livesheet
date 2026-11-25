@@ -750,6 +750,81 @@ below was verified by building (`bin/build`), running the backend tests
     its curve — all unaffected, confirming the new derivative call site
     is a genuinely separate branch that never runs for an ordinary line.
 
+- **Symbolic indefinite integration** (phase 2 of symbolic calculus,
+  completing the `TODO.md` item) — a line typed as `\int(expr)dx`
+  evaluates to the symbolic antiderivative of `expr`, reusing phase 1's
+  AST layer (`parseLatexToTree`/`containsVar`/`simplifyTree`/
+  `treeToLatex`/`appendFormulaResult`) as-is, with zero changes to
+  `evaluateLatex()`/`collectDefinitions()` or the derivative code path
+  — purely additive, confirmed via `git diff | grep '^-'` showing only
+  comment-text removals.
+  - **Trigger, and why it isn't bare `\int f(x)\,dx`**: `Ctrl+Shift+I`
+    inserts `\int` immediately followed by an auto-paired `(`, so the
+    typed/rendered shape is `\int\left(f(x)\right)dx`. Confirmed live
+    that MathQuill's `\int` is a bare, slot-less symbol in this app's
+    bundled build (not a `\Sigma`/`\Pi`-style template with sub/
+    superscript boxes — there's no "leave the bounds empty" option for
+    an indefinite integral, there are no bounds slots at all), and that
+    a bare `\int` with no block boundary gets swallowed into a
+    numerator by MathQuill's own auto-fraction grab-back the moment the
+    integrand contains a `/` (confirmed: `\int` then `1/x` with nothing
+    between produces `\frac{\int1}{x}`, not `\int\frac{1}{x}`) — the
+    forced paren wrapper exists specifically to give the integrand a
+    block boundary that grab-back respects, which is what makes the
+    required `n=-1` case (`∫1/x dx`) typeable at all, not a style
+    choice. `matchIntegralTrigger()` detects the shape purely textually
+    (starts with `\int`, ends with literal `d` + one identifier token),
+    same "return null to fall through to the numeric path" convention
+    `matchDerivativeTrigger()` already established.
+  - **Why `Ctrl+Shift+I` and not `Ctrl+I`**: Mathcad's own real
+    keyboard convention (PTC docs, web-searched) is version-dependent —
+    legacy Mathcad uses `Ctrl+I` for the indefinite integral, later
+    Prime-era Mathcad uses `Ctrl+Shift+I`. `Ctrl+I` is already claimed
+    in this app by the Greek-letter feature (`\iota`), so
+    `Ctrl+Shift+I` was used — free, and itself a genuine Mathcad
+    convention, not an arbitrary pick. `Ctrl+Shift+I` is also
+    Chromium's own "open DevTools" shortcut, handled with the same
+    `preventDefault()`/`stopImmediatePropagation()` override this app's
+    `Ctrl+S`/`Ctrl+Q` already use.
+  - **Rules implemented** (same agreed-scope spirit as phase 1, not a
+    general CAS): power rule including the `n=-1` case (`→ ln(x)`,
+    handled separately from the general power formula to avoid
+    dividing by zero), `sin`→`-cos`, `cos`→`sin`, `exp(f)`/`e^f`→itself,
+    a constant base `b^x`→`b^x/\ln(b)`, linearity (`∫(f+g) = ∫f+∫g`),
+    and constant-factor pull-out (`∫k\cdot f = k\cdot∫f`). **"Simple
+    compositions" is scoped specifically to linear substitution**
+    (`∫f(ax+b)dx = F(ax+b)/a`, via a new `linearCoeffs()` helper that
+    structurally detects "linear in the integration variable" the same
+    way phase 1's rules already distinguish "constant w.r.t. this
+    variable" from "literal number" — not general u-substitution
+    pattern-matching, which was deliberately ruled out as an unbounded
+    problem). `\tan`/`\ln`/`\log` are explicitly out of scope (not just
+    unimplemented) and a non-linear composition (e.g. `∫2x\sin(x^2)dx`,
+    a product of two factors both depending on the integration
+    variable) fails gracefully rather than guessing — confirmed live
+    that an unsupported sub-term anywhere (even nested inside a sum)
+    fails the *whole* integral rather than partially integrating and
+    leaving a dangling piece, by simply letting the exception propagate
+    uncaught up through the recursive rules to the same top-level
+    try/catch the derivative trigger already uses.
+  - Verified with a Node-level test (29 assertions: every rule above,
+    `n=-1`, two linear-substitution cases, linearity/pull-out, the
+    "other variable treated as constant" case, and the graceful-
+    failure cases for `tan`/`ln`/`log` — standalone and nested in a sum
+    — and the non-linear-composition case), and live against the real
+    `src/notebook.html` (headless Chromium over the DevTools Protocol,
+    `claude-in-chrome` wasn't connected in this environment). `bin/
+    build`/`bin/test` clean, 7/7. Live: `Ctrl+Shift+I` on a brand-new
+    pending line inserts `\int\left(\right)` correctly (confirming the
+    same "fresh pending line" fallback phase 1 needed was re-applied
+    for this new shortcut too); `\int(1/x)dx` → `\ln(x)`; `\int\sin(3x)
+    dx` → `-\cos(3x)/3`; `\int e^{2x}dx` → `e^{2x}/2`; `\int\tan(x)dx`
+    and `\int2x\sin(x^2)dx` both leave the line unevaluated (graceful
+    failure, no result appended); `Ctrl+Shift+I` on a heading line is a
+    safe no-op. Regression spot-check, same session: `3+4=` → `7` and
+    `d/dx(x^2)=` → `2\cdot x` (phase 1) both still correct, confirming
+    this phase never touched the numeric or derivative paths.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
@@ -819,12 +894,20 @@ below was verified by building (`bin/build`), running the backend tests
   design). `bin/build`/`bin/test` clean (7/7). Verified independently
   (not just trusting the delegated report) in a plain-Chrome-hosted
   copy of `notebook.html`: `i:=0…4` then `mean(i)=2`, `median(i)=2`,
-  `variance(i)=2`, `stdev(i)=1.414214` — all correct. A stray
+  `variance(i)=2`, `stdev(i)=1.414214` — all correct. A
   `.claude/agent-memory/` directory the implementing session created
-  (an invented location, not this project's actual memory system) was
-  removed before committing; the one substantive lesson in it (the
-  jQuery-load-order gotcha) was already correctly captured in
-  `.claude/agents/frontend.md`'s own lessons-learned section.
+  was removed before committing, on the mistaken belief it was an
+  invented location — **corrected 2026-11-25: it wasn't.**
+  `.claude/agents/frontend.md`'s `memory: project` frontmatter makes
+  `.claude/agent-memory/frontend/` that agent's real, documented,
+  meant-to-be-committed persistent memory (see the manager's own
+  `verification-discipline` memory for the full correction). That
+  directory was deleted this same mistaken way at least three times
+  across sessions before being caught and fixed on 2026-11-25 — this
+  entry's deleted content (the jQuery-load-order gotcha) is
+  unrecoverable beyond what was already duplicated into
+  `.claude/agents/frontend.md`'s lessons-learned section, but the
+  directory itself is restored and preserved going forward.
 - 2026-11-24: Paper mode made the default (see the entry above). One-
   line change (`<html class="paper">`). `bin/build`/`bin/test` clean
   (7/7). Verified live in the compiled app: fresh launch shows white
