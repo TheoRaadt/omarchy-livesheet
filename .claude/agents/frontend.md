@@ -74,6 +74,22 @@ the whole point of this section is that the next person (human or
 agent) doesn't have to rediscover it. Keep each one to the concrete
 trap and its fix.
 
+**2026-11-25: the recurring, actionable lessons below have been
+extracted into three project skills** (`.claude/skills/`), so they
+load automatically when relevant instead of requiring a read through
+this whole section: `livesheet-live-verify` (how to actually drive
+`notebook.html` live — tooling order, the DevTools-Protocol fallback,
+the MathQuill/CDP gotchas that look like app bugs if you don't know
+them), `livesheet-add-ui-feature` (adding a line type/keyboard
+shortcut/field — dispatcher completeness, the fresh-pending-line
+timing gap, keybinding safety, etc.), and `livesheet-extend-evaluator`
+(extending `evaluateLatex()`'s grammar — real MathQuill LaTeX-emission
+quirks, safe-new-entry-point reasoning, etc.). Keep appending dated
+bullets here as the running historical log either way — when a new
+one is itself a generally-reusable pattern (not a one-off fact about
+this one feature), fold it into the relevant skill too, the same way
+the ones below already were.
+
 - **2026-11-17** — MathQuill emits `\left(`/`\right)` in `latex()` for a
   *typed* `(`/`)`, never bare `(`/`)` — a parser that only handles bare
   parens silently never matches real typed input. Handle both forms
