@@ -140,10 +140,10 @@ below was verified by building (`bin/build`), running the backend tests
     stopped driving that window to avoid clobbering their input (see the
     multi-variable function entry above, which came out of exactly that).
 
-- **White-paper/black-ink toggle (`Ctrl+L`)** — flips between the default
-  dark sheet and a white-background/black-text look, for printing-style
-  reading. Session-only (no settings storage in this app at all, so it's
-  back to dark on next launch, same as window size/position).
+- **White-paper/black-ink toggle (`Ctrl+L`)** — flips between the
+  white-background/black-text default and a dark-sheet alternative.
+  Session-only (no settings storage in this app at all, so it's back to
+  paper on next launch, same as window size/position).
   - `src/notebook.html`: the two appearances are `--bg`/`--ink` CSS custom
     properties, read by every color rule (directly, or via `currentColor`
     for things like the matrix brackets) rather than hardcoded colors, so
@@ -151,6 +151,13 @@ below was verified by building (`bin/build`), running the backend tests
     look is actually defined; `togglePaperMode()` just toggles that class
     and is wired to `Ctrl+L` in the same global keydown listener as
     `Ctrl+S`/`Ctrl+Q`.
+  - **2026-11-24: paper made the default**, at the user's request — the
+    `<html>` tag now carries the `paper` class from page load, and
+    `Ctrl+L` removes it for the dark sheet instead of adding it (the two
+    were always just a CSS class presence/absence, so this is a one-line
+    change, not a new code path). Verified live: a fresh launch shows
+    white background/black ink with no keystroke needed; `Ctrl+L` still
+    flips to the dark sheet and back.
   - Fixed as part of this: the class and variables initially went on
     `<body>`, which seemed natural, but a CSS custom property only
     cascades to descendants — `<body>` is a descendant of `<html>`, not
@@ -547,6 +554,90 @@ below was verified by building (`bin/build`), running the backend tests
     the new dispatch checks didn't disturb existing `trace`/`solve`/
     `det` ordering.
 
+- **Inline code-completion for built-in function names** — an IDE-style
+  autocomplete dropdown anchored at the live text cursor in any math-
+  line/matrix-cell/graph-expression field. Typing 2+ letters that
+  prefix-match a built-in function name (`sin`, `det`, `trace`, `solve`,
+  `mean`, ... — see below) shows a dropdown; Up/Down moves a highlight,
+  Enter/Tab finishes typing the match (plus the following `(`), Escape
+  dismisses leaving the typed text untouched.
+  - **Two design pivots before this shape was settled** (full history
+    in the git log/conversation, condensed here): the user first asked
+    for "a clever key combination" to surface "all the available
+    commands and functions" → researched command-palette UX (VS Code/
+    Linear/Vercel/Superhuman-style Cmd/Ctrl+K), designed as an `F1`-
+    triggered searchable *reference* overlay (confirmed non-executing,
+    specifically to avoid a generic command-dispatch layer) → the user
+    then asked for it to be "code completion like" instead, which
+    replaced the overlay idea entirely with inline, cursor-anchored
+    autocomplete. Worth remembering: "inserts on select" here is still
+    *not* the executable-command-palette risk that was deliberately
+    avoided earlier — completion only ever finishes typing text already
+    started, through the same `typedText()`/`.cmd()` calls every other
+    shortcut already uses, never a new generic action-dispatch layer.
+  - **Candidate list built from the evaluator's own data, not a
+    separate hand-maintained list**: every `NATIVE_BUILTINS` entry
+    (`sinh`/`sin`/.../`ln`/`log`/`exp`), `det` (native too, but its own
+    `parseAtom()` branch rather than living in that table), every
+    `WRAPPED_BUILTINS` key, and the literal-substring-matched names
+    (`trace`/`solve`/`mean`/`median`/`variance`/`stdev`) — 34 names
+    total. `transpose`/`inverse` are deliberately absent (they're
+    `^T`/`^-1` operators on a matrix base, not typed names — nothing to
+    complete). Greek-letter-by-spelled-name completion (e.g. typing
+    "alpha") was deliberately scoped out too: that action would need to
+    *delete* the typed prefix and substitute a command, a different and
+    riskier mechanism than "finish typing this string," and Greek
+    letters already have a fast one-keystroke shortcut once known.
+  - **Match ordering matters**: sorted shortest-first (ties
+    alphabetical), specifically so typing exactly `sin` highlights `sin`
+    itself rather than `sinh` — `NATIVE_BUILTINS`' own array order lists
+    `sinh` before `sin` (for the evaluator's own greedy-match parsing
+    reasons), which would otherwise make `sinh` the default Enter/Tab
+    target right after typing a complete, different, valid name.
+  - **Cursor-anchoring question** (left open in the design, now
+    resolved): MathQuill's live cursor is a real DOM element
+    (`.mq-cursor`, confirmed empirically) with a normal
+    `getBoundingClientRect()` in every field shape this app creates
+    (math-line, graph-line expression field, matrix-cell) — all three
+    are the same `MQ.MathField` constructor with a different container,
+    so one `field.el().querySelector(".mq-cursor")` call needed no
+    per-shape branching at all.
+  - **A timing gap generalized from the Greek-letter fix**: the very
+    first keystroke on a brand-new pending line isn't seen by the
+    completion tracker either, for the identical reason the Greek-
+    letter shortcut hit this on 2026-11-24 (the field doesn't exist
+    until the "input" event fires, after the capture-phase keydown has
+    already run) — e.g. typing "det(" as literally the first thing on a
+    fresh line tracked only "et". Fixed the same way: `convertToMath()`
+    seeds completion tracking from the buffered text it's already
+    replaying, when that text is a run of lowercase letters.
+  - Verified with a Node-level check of the candidate-list/match/sort
+    logic, and live against the real `src/notebook.html` (served over
+    HTTP, driven with real synthetic keyboard events — both via the
+    implementing session's headless-Chromium+CDP harness and, in a
+    separate independent check from the manager session, a visible
+    Chromium window via `claude-in-chrome`): `bin/build`/`bin/test`
+    clean, 7/7. Typing "de" in a math line shows "det", positioned at
+    the cursor; Enter inserts `\det\left(\right)`. Typing "mea" in a
+    matrix cell shows "mean"; typing "tr" shows "trace". Typing exactly
+    "sin" then Enter correctly inserts `\sin\left(\right)`, not
+    `sinh(...)`. Escape dismisses cleanly, leaving the field fully
+    usable (confirmed by continuing to type normally afterward).
+    Typing "sin(0)=" entirely by hand, never touching the dropdown,
+    still evaluates to `0` exactly as before. `Ctrl+B` (Greek letters,
+    sharing the same keydown listener) still inserts β correctly as a
+    fresh line's first keystroke.
+  - **An environment incident worth recording, not an app bug**: the
+    implementing session's first live-testing attempt used `wtype`
+    against the compiled Qt app and, despite reporting success,
+    Hyprland's window focus silently stayed on a different window —
+    sending a handful of stray keystrokes into the manager session's
+    own terminal input instead of the livesheet window. Caught quickly
+    and had no lasting effect (confirmed: nothing was sent or executed
+    as a result), but see `.claude/agents/frontend.md`'s lessons for the
+    full writeup and the safer alternative this pushed verification
+    toward.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
@@ -622,3 +713,21 @@ below was verified by building (`bin/build`), running the backend tests
   removed before committing; the one substantive lesson in it (the
   jQuery-load-order gotcha) was already correctly captured in
   `.claude/agents/frontend.md`'s own lessons-learned section.
+- 2026-11-24: Paper mode made the default (see the entry above). One-
+  line change (`<html class="paper">`). `bin/build`/`bin/test` clean
+  (7/7). Verified live in the compiled app: fresh launch shows white
+  background; typed text renders in black ink, confirming it's not
+  white-on-white.
+- 2026-11-24: Inline code-completion for built-in function names (see
+  the entry above for the full design). `bin/build`/`bin/test` clean
+  (7/7). Verified independently in a visible Chromium window via
+  `claude-in-chrome` (not just trusting the delegated report): typing
+  "de" in a math line showed "det" positioned at the cursor, Enter
+  inserted `det( )` correctly rendered upright; typing exactly "sin"
+  then Enter inserted `sin( )`, not `sinh(...)`; Escape after typing
+  "me" left the field untouched and still usable (continuing to type
+  "an(5)" produced the expected literal `mean(5)`, confirming nothing
+  was inserted); "sin(0)=" typed entirely by hand evaluated to `0`
+  unchanged; `Ctrl+B` still inserted β as a fresh line's first
+  keystroke; typing "tr" inside a matrix cell showed "trace" positioned
+  correctly there too.

@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html class="paper">
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="mathquill/mathquill.css">
@@ -12,11 +12,12 @@
     color: var(--ink, #e6e6e6);
     font-family: -apple-system, "Segoe UI", sans-serif;
   }
-  /* Toggled by Ctrl+L (togglePaperMode()): a white-paper/black-ink look
-     for printing-style reading, instead of the default dark sheet. Every
-     other rule below reads color through --ink (or currentColor, which
-     traces back to it) rather than hardcoding it, so this is the only
-     place the two appearances are actually defined.
+  /* The default look: white paper, black ink (the <html> tag carries
+     this class from page load). Ctrl+L (togglePaperMode()) removes it
+     for the dark-sheet alternative instead. Every other rule below
+     reads color through --ink (or currentColor, which traces back to
+     it) rather than hardcoding it, so this is the only place the two
+     appearances are actually defined.
      This goes on <html>, not <body>: a custom property only cascades to
      descendants, and <body> is a descendant of <html>, not the reverse —
      putting it on <body> left <html>'s own background (which extends the
@@ -177,6 +178,38 @@
   }
   .mq-editable-field .mq-cursor {
     border-color: var(--ink, #e6e6e6) !important;
+  }
+  /* Inline code-completion dropdown (see TODO.md's "inline code-completion
+     for built-in function names" item, and the big explanatory comment by
+     BUILTIN_FUNCTION_NAMES below for the full design). Positioned with
+     "fixed" and plain getBoundingClientRect() coordinates from the live
+     MathQuill cursor element (.mq-cursor) — see positionCompletionDropdown()
+     — so no scroll-offset math is needed. Monochrome like the rest of the
+     page: border/background/text all read through --ink/--bg so it follows
+     the dark/paper toggle automatically, and the highlighted row simply
+     swaps which of the two is foreground vs. background.
+  */
+  .completion-dropdown {
+    position: fixed;
+    z-index: 1000;
+    background: var(--bg, #0e0e10);
+    color: var(--ink, #e6e6e6);
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    font-size: 0.85em;
+    min-width: 72px;
+    max-height: 220px;
+    overflow-y: auto;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+  .completion-item {
+    padding: 4px 12px;
+    white-space: nowrap;
+  }
+  .completion-item.completion-active {
+    background: var(--ink, #e6e6e6);
+    color: var(--bg, #0e0e10);
   }
 </style>
 </head>
@@ -1452,12 +1485,34 @@
           // "=" recomputes and re-appends a fresh one.
           edit: function () {
             if (line.resultMatrixEl) { line.resultMatrixEl.remove(); line.resultMatrixEl = null; }
+            completionOnFieldEdited(mathField);
           }
         }
       });
       line.mathField = mathField;
       container._line = line;
       for (var k = 0; k < buffered.length; k++) insertChar(line, buffered[k]);
+      // The completion feature's own keydown-based letter tracking (see the
+      // "Inline code-completion" block above) can't resolve a field for the
+      // very FIRST keystroke on a brand-new pending line — the same timing
+      // gap the Greek-letter shortcut hit for the same reason (see this
+      // file's dated lessons): that keydown is capture-handled before THIS
+      // function (triggered by the "input" event it causes) has even
+      // created the field yet, so resolveMathField() has nothing to return
+      // for it. Seed tracking here instead, from the buffered text this
+      // conversion is replaying anyway, so a function name typed as
+      // literally the first characters on a brand-new line (e.g. typing
+      // "sin(x)" right after Enter) is tracked from its very first letter,
+      // not just from the second one on. Confirmed empirically (a CDP-
+      // driven headless-Chromium run dispatching real keydown events, the
+      // same rigor every other MathQuill claim in this file gets) that
+      // without this, completion.buffer silently started one character
+      // late on a fresh line, with no error — e.g. typing "det(" tracked
+      // only "et", which matches no candidate at all.
+      if (buffered && /^[a-z]+$/.test(buffered)) {
+        updateCompletionBuffer(mathField, buffered);
+        completionOnFieldEdited(mathField);
+      }
       mathField.focus();
     }
 
@@ -1520,7 +1575,13 @@
         handlers: {
           enter: function () { exitMatrix(line); },
           deleteOutOf: function (dir) { matrixDeleteOutOf(line, r, c, dir); },
-          moveOutOf: function (dir) { matrixMoveOutOf(line, r, c, dir); }
+          moveOutOf: function (dir) { matrixMoveOutOf(line, r, c, dir); },
+          // Unlike a math-line/graph-line field, a matrix cell had no
+          // "edit" handler at all before this feature — added purely so
+          // completionOnFieldEdited() has the same post-edit hook to
+          // render/reposition the dropdown against here as the other two
+          // field shapes already get.
+          edit: function () { completionOnFieldEdited(mathField); }
         }
       });
       // Lets the global keydown listener (which only has the DOM event's
@@ -1996,7 +2057,7 @@
           enter: function () { onEnter(line); },
           deleteOutOf: function (dir) { onDeleteOutOf(line, dir); },
           moveOutOf: function (dir) { onMoveOutOf(line, dir); },
-          edit: function () { renderGraph(line); }
+          edit: function () { renderGraph(line); completionOnFieldEdited(mathField); }
         }
       });
       line.mathField = mathField;
@@ -2117,6 +2178,194 @@
       return hostLine ? hostLine.mathField : null;
     }
 
+    // --- Inline code-completion for built-in function names ---------------
+    // See TODO.md's "inline code-completion for built-in function names"
+    // item for the full design history (two pivots: an F1 command-palette
+    // idea, then "code-completion like" instead) and scoping decisions
+    // (built-in function names only, v1; no Greek-letter-by-name
+    // completion — that needs a delete-and-substitute insertion, a
+    // different and riskier mechanism than "finish typing the rest of this
+    // string", so it's deliberately not built here).
+    //
+    // The candidate list is built FROM the evaluator's own data (not a
+    // separate hand-maintained list that could drift out of sync with what
+    // parseAtom() actually accepts): every NATIVE_BUILTINS entry (stripped
+    // of its leading "\\", since that's the plain text MathQuill's
+    // autoOperatorNames recognizes as the user types it — "sinh", not
+    // "\\sinh"), "det" (native too, but handled as its own eat("\\det")
+    // branch in parseAtom rather than living in the NATIVE_BUILTINS table,
+    // so it's added explicitly here), every WRAPPED_BUILTINS key, and the
+    // literal-substring-gated-on-"(" names (trace/solve/mean/median/
+    // variance/stdev) that aren't in MathQuill's own table at all — see
+    // PROGRESS.md's matrix-functions/statistical-functions entries for why
+    // those specific names are exactly the ones worth completing: they
+    // render as plain, unconfirmed italic letters with no visual feedback
+    // until the trailing "(" triggers them, unlike "sin"/"det".
+    // transpose/inverse are deliberately absent: they're "^T"/"^-1"
+    // operators on a matrix base (see parsePow), not typed function names
+    // — there's nothing to complete.
+    var BUILTIN_FUNCTION_NAMES = (function () {
+      var names = [];
+      NATIVE_BUILTINS.forEach(function (entry) { names.push(entry[0].slice(1)); });
+      names.push("det");
+      for (var k in WRAPPED_BUILTINS) names.push(k);
+      names.push("trace", "solve", "mean", "median", "variance", "stdev");
+      return names;
+    })();
+    // Below 2 typed characters, almost every letter matches *something*
+    // (e.g. "s" alone is a prefix of sin/sinh/sec/sech/...) — noisy enough
+    // on the very first keystroke of an ordinary one-letter variable name
+    // that it would pop up constantly for no reason. 2 is the smallest
+    // threshold that avoids that while still triggering early (e.g. "de"
+    // already narrows to just "det").
+    var MIN_COMPLETION_CHARS = 2;
+
+    // All the completion feature's live state, in one place. `field` is
+    // the MathQuill field (MQ.MathField instance — the same object
+    // resolveMathField() above already returns for math-line/graph-line/
+    // matrix-cell alike) currently being tracked, or null when nothing is.
+    // `buffer` is NOT derived from the field's own LaTeX/DOM — see the
+    // comment on the keydown handling below for why it's tracked as a
+    // separate plain string instead.
+    var completion = { field: null, buffer: "", matches: [], highlight: 0, dropdownEl: null };
+
+    // Closes the dropdown's DOM without forgetting what's being typed —
+    // used when the buffer stops matching anything but might start
+    // matching again on the next keystroke (e.g. backspacing "mex" back
+    // down to "me"), so the dropdown can silently reappear instead of
+    // needing a whole fresh word to retrigger it.
+    function hideCompletionDropdown() {
+      if (completion.dropdownEl) { completion.dropdownEl.remove(); completion.dropdownEl = null; }
+      completion.matches = [];
+      completion.highlight = 0;
+    }
+    // Stops tracking entirely — any key that isn't a letter continuing the
+    // current word, a field/focus change, or Escape.
+    function resetCompletion() {
+      hideCompletionDropdown();
+      completion.field = null;
+      completion.buffer = "";
+    }
+    function completionMatchesFor(buffer) {
+      if (buffer.length < MIN_COMPLETION_CHARS) return [];
+      var matches = BUILTIN_FUNCTION_NAMES.filter(function (name) { return name.indexOf(buffer) === 0; });
+      // Shortest match first (ties broken alphabetically): if the buffer
+      // already spells a complete name ("sin"), that name's own remaining-
+      // characters-to-type is empty, which makes it the shortest possible
+      // match and therefore first/highlighted by default — without this,
+      // NATIVE_BUILTINS' own ordering (sinh before sin, since sinh/cosh/
+      // tanh/coth are listed first to satisfy parseAtom's greedy-match
+      // ordering) would put "sinh" first instead, so pressing Enter right
+      // after typing exactly "sin" would surprisingly extend it to "sinh(".
+      matches.sort(function (a, b) { return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0); });
+      return matches;
+    }
+    // Pure bookkeeping only (no DOM touched) — called from the keydown
+    // handler below, before MathQuill has actually applied the keystroke,
+    // so there's nothing reliable to render/position against yet. The
+    // actual dropdown render/reposition happens from completionOnFieldEdited()
+    // instead, which is the "edit" handler every math/graph/matrix-cell
+    // field already calls on every edit, live or programmatic — guaranteed
+    // to fire AFTER MathQuill has updated its DOM (including moving the
+    // real .mq-cursor element), unlike this keydown handler itself.
+    function updateCompletionBuffer(field, buffer) {
+      completion.field = field;
+      completion.buffer = buffer;
+      completion.matches = completionMatchesFor(buffer);
+      completion.highlight = 0;
+    }
+    // Finds the field's own live cursor element to anchor the dropdown
+    // against. Confirmed empirically (not assumed) that ".mq-cursor" is a
+    // real, single DOM element with a normal getBoundingClientRect() for
+    // every MathQuill field shape this app creates (math-line, graph-line
+    // expression field, matrix-cell) — they're all built from the same
+    // MQ.MathField constructor, just given different container elements,
+    // and a throwaway headless-Chromium check (this file's own established
+    // way of confirming a MathQuill claim rather than assuming it) typing
+    // partial text into a MathField found exactly one ".mq-cursor" node
+    // with sane left/top/bottom/width/height every time. Falls back to the
+    // field's own root element (field.el() — confirmed to return the exact
+    // container passed to MQ.MathField/addCellToRow/convertToGraph) if for
+    // some reason no cursor element is found (e.g. the field lost focus
+    // between the keystroke and this call).
+    function positionCompletionDropdown(dropdownEl, field) {
+      var cursorEl = field.el().querySelector(".mq-cursor");
+      var rect = (cursorEl || field.el()).getBoundingClientRect();
+      dropdownEl.style.left = rect.left + "px";
+      dropdownEl.style.top = (rect.bottom + 4) + "px";
+    }
+    // (Re)builds the dropdown's rows from `completion.matches`/`highlight`
+    // and repositions it against the field's current cursor position.
+    // Called both after a real field edit (completionOnFieldEdited) and
+    // directly after Up/Down changes the highlight (no field edit happens
+    // for that, so nothing else would trigger a re-render).
+    function renderCompletionDropdown() {
+      var el = completion.dropdownEl;
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "completion-dropdown";
+        document.body.appendChild(el);
+        completion.dropdownEl = el;
+      }
+      el.innerHTML = "";
+      completion.matches.forEach(function (name, i) {
+        var item = document.createElement("div");
+        item.className = "completion-item" + (i === completion.highlight ? " completion-active" : "");
+        item.textContent = name;
+        el.appendChild(item);
+      });
+      positionCompletionDropdown(el, completion.field);
+    }
+    // Called from every math/graph/matrix-cell field's "edit" handler
+    // (added right alongside each one's existing edit-handling, below) —
+    // the one correct place to actually show/hide/reposition the dropdown,
+    // since by the time "edit" fires MathQuill has already applied the
+    // keystroke and moved its real cursor element. A no-op for an edit on
+    // any field other than the one currently being tracked (including
+    // "no field at all", i.e. completion.field is null) — covers both an
+    // edit caused by something this feature doesn't care about (a matrix
+    // result being cleared, a graph re-rendering, ...) and the edits
+    // acceptCompletion() itself causes while finishing a word, which it
+    // deliberately resets tracking before making, for exactly this reason.
+    function completionOnFieldEdited(field) {
+      if (completion.field !== field) return;
+      if (completion.matches.length === 0) { hideCompletionDropdown(); return; }
+      renderCompletionDropdown();
+    }
+    // Finishes typing the highlighted match's remaining literal characters
+    // (whatever's left after what's already been typed) plus a following
+    // "(" — via the field's own typedText(), the exact same mechanism
+    // insertChar()/the Greek-letter handler already use elsewhere in this
+    // file, not a new insertion path. MathQuill's own auto-bracket-pairing
+    // then takes over for the "(" exactly as if the user had typed it
+    // (confirmed empirically: typedText("t(") after typing "de" produces
+    // "\det\left(\right)", the same as typing "det(" by hand). Resets
+    // tracking FIRST, before typedText() runs — typedText() can fire
+    // several of this field's own "edit" events while it inserts each
+    // character, and completionOnFieldEdited() would otherwise see the
+    // still-stale (pre-acceptance) matches/highlight mid-insertion.
+    function acceptCompletion() {
+      var field = completion.field;
+      var name = completion.matches[completion.highlight];
+      var remaining = name.slice(completion.buffer.length);
+      resetCompletion();
+      field.typedText(remaining + "(");
+    }
+    // Closes the dropdown (without inserting anything) the moment focus
+    // moves to any element outside the field currently being tracked —
+    // covers clicking/Tabbing/arrowing to a different line or cell, and is
+    // the mechanism behind "closes naturally ... on focus loss" from
+    // TODO.md's interaction spec. "focusin" (rather than "blur"/
+    // "focusout") is used specifically because it always fires on the
+    // newly-focused element regardless of how MathQuill implements a
+    // field's own focus handling internally (a hidden textarea under the
+    // hood, confirmed empirically above) — so this doesn't depend on
+    // guessing which element inside MathQuill's structure "blur" would
+    // even fire on.
+    document.addEventListener("focusin", function (e) {
+      if (completion.field && !completion.field.el().contains(e.target)) resetCompletion();
+    }, true);
+
     // One global capture-phase listener handles every "this key means
     // something special" case in the app: Ctrl+S/Ctrl+Q (routed to Qt),
     // Ctrl+L (toggles paper mode, handled entirely here), Ctrl+<letter>/
@@ -2198,6 +2447,81 @@
       // Nothing below this point wants to intercept a Ctrl/Cmd combo
       // (copy, paste, select-all, ...), so let those all through as-is.
       if (mod) return;
+
+      // --- Inline code-completion keys ---------------------------------
+      // resolveMathField() already unifies math-line/graph-line/matrix-
+      // cell into "the one field this keystroke is going into", the same
+      // resolution the Greek-letter handler above uses — completion reuses
+      // it rather than re-deriving which of the three shapes this is.
+      var completionField = resolveMathField(e.target);
+      if (completionField) {
+        // Highest priority, ahead of EVERY other meaning these same keys
+        // have below (Tab for matrix-cell navigation, Enter for a new
+        // line, arrows for cell/line movement): once the dropdown is
+        // actually showing for this exact field, Up/Down/Enter/Tab/Escape
+        // unambiguously mean "drive the dropdown", not "do the field's
+        // normal thing" — deliberately overriding those other meanings for
+        // this one keystroke only, same as how a matrix cell already
+        // overrides MathQuill's own default meaning for "," and ";".
+        if (completion.field === completionField && completion.matches.length > 0) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault(); e.stopImmediatePropagation();
+            completion.highlight = (completion.highlight + 1) % completion.matches.length;
+            renderCompletionDropdown();
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault(); e.stopImmediatePropagation();
+            completion.highlight = (completion.highlight - 1 + completion.matches.length) % completion.matches.length;
+            renderCompletionDropdown();
+            return;
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault(); e.stopImmediatePropagation();
+            acceptCompletion();
+            return;
+          }
+          if (e.key === "Escape") {
+            // Dismiss without inserting anything, leaving the typed text
+            // exactly as it is — just stop tracking/hide the dropdown.
+            e.preventDefault(); e.stopImmediatePropagation();
+            resetCompletion();
+            return;
+          }
+        }
+        // Otherwise: track the contiguous run of letters just typed,
+        // immediately before the cursor, as a plain string — NOT by
+        // reading it back out of the field's own LaTeX/DOM afterward.
+        // Confirmed empirically (see BUILTIN_FUNCTION_NAMES' comment
+        // above) that a multi-letter name MathQuill doesn't already
+        // recognize (anything in WRAPPED_BUILTINS, or trace/solve/mean/
+        // median/variance/stdev) renders as several SEPARATE adjacent
+        // single-letter variable nodes, never grouped into one token, so
+        // there's no single place to read "the current word" back from —
+        // tracking what was actually typed, in order, as it's typed, is
+        // both simpler and exactly what's needed anyway (the literal
+        // characters still left to type). Letters are never
+        // preventDefault()'d here — this only ever OBSERVES typing, same
+        // as it never changes what a plain letter keystroke does; backspace
+        // likewise is only tracked, not intercepted, so it still deletes
+        // normally too.
+        if (/^[a-z]$/.test(e.key)) {
+          var base = completion.field === completionField ? completion.buffer : "";
+          updateCompletionBuffer(completionField, base + e.key);
+        } else if (e.key === "Backspace") {
+          if (completion.field === completionField && completion.buffer.length > 0) {
+            updateCompletionBuffer(completionField, completion.buffer.slice(0, -1));
+          }
+        } else if (completion.field === completionField) {
+          // Any other key breaks the contiguous run (a digit, an operator,
+          // an arrow key moving the cursor elsewhere, Space, an Enter/Tab/
+          // Escape that reached here only because the dropdown wasn't
+          // open, ...) — stop tracking entirely rather than leaving a
+          // stale buffer that no longer reflects what's actually to the
+          // left of the cursor.
+          resetCompletion();
+        }
+      }
 
       // --- Matrix-cell keys -------------------------------------------
       var cellEl = e.target.closest ? e.target.closest(".matrix-cell") : null;

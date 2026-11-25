@@ -315,3 +315,36 @@ trap and its fix.
   `--dump-dom` alone won't show it. Always copy `jquery.min.js` alongside
   `mathquill.min.js`/`mathquill.css` into the throwaway test directory
   and load it first.
+- **2026-11-24** — The "very first keystroke on a brand-new pending
+  line isn't seen by a keydown-based tracking mechanism" timing gap
+  (originally found and fixed for the Greek-letter shortcut) is a
+  general hazard, not a one-off: it hit the inline code-completion
+  feature too (typing "det(" as literally the first thing on a fresh
+  line tracked only "et", missing the "d"), for the exact same root
+  cause — the field doesn't exist yet when the capture-phase keydown
+  fires; it's created afterward, from the "input" event. Any *new*
+  feature that tracks keystrokes via the global keydown listener and
+  expects a resolvable field needs to check this specific case
+  explicitly (seed its own state from `convertToMath()`'s buffered
+  replay text, the same fix both features now share) rather than assume
+  "it'll just work because the Greek-letter case already handles it" —
+  each feature has its own tracking state, so each needs its own seed.
+- **2026-11-24 — a safety-relevant incident, not just a testing
+  annoyance**: live-testing the inline-completion feature via `wtype`
+  against the compiled Qt app, `hyprctl`'s focus-switch call reported
+  success but the monitor's actual visible/focused window silently
+  stayed on the *manager session's own terminal* — sending a handful of
+  synthetic keystrokes into that terminal's live chat input instead of
+  into livesheet (visible mid-composition in a screenshot). This is a
+  step beyond the already-documented "wtype/Hyprland focus is flaky" lesson:
+  it's not just "the test gets confusing results," it's "stray keystrokes
+  can land in the actual Claude Code session running the work," which is
+  a different order of risk. Caught by noticing the screenshot didn't
+  match expectations and stopped immediately — no lasting effect this
+  time, but do not assume that's guaranteed. **Until a verified reliable
+  focus-then-type recipe exists for this Hyprland session, prefer
+  driving a served copy of `notebook.html` in a real (visible or
+  headless) Chromium window over `wtype`-into-the-compiled-app** for any
+  `src/notebook.html` change — nothing about this app requires the
+  compiled Qt shell for frontend-only verification, and Chromium-based
+  testing never touches the shared compositor/focus state at all.

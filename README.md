@@ -132,7 +132,7 @@ X-Y plot) starts a **graph** instead of a math field:
 |----------|----------|
 | `Ctrl+S` | Export   |
 | `Ctrl+Q` | Quit     |
-| `Ctrl+L` | Toggle a white-paper/black-ink look (vs. the default dark sheet) — session-only, not remembered between launches |
+| `Ctrl+L` | Toggle a dark sheet look (vs. the default white-paper/black-ink) — session-only, not remembered between launches |
 
 ### Greek letters
 

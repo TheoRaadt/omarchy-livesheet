@@ -8,9 +8,67 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-24 (matrix functions, equation solver, and
-statistical functions shipped — see `PROGRESS.md`). Everything below
-this line is still open.
+Last updated: 2026-11-24 (matrix functions, equation solver, statistical
+functions, default paper-mode, and inline code-completion shipped — see
+`PROGRESS.md`). Everything below this line is still open.
+
+## Queued — scalar-matrix multiplication (bug report, small)
+
+User-reported gap: `2*A`/`A*2` (a scalar times a named matrix) doesn't
+work. Confirmed in the code, not just the report — this is a deliberate
+scope limit from the matrix-functions work, not an oversight that
+regressed: `broadcast()` (`src/notebook.html`, search
+`"matrix arithmetic (other than ^T, ^-1, det, trace) is not supported"`)
+throws for *any* arithmetic operator when either operand is a matrix
+value, by design at the time (only `^T`/`^-1`/`det`/`trace` were in
+scope — see `PROGRESS.md`'s matrix-functions entry). Scalar multiplication
+is a much more basic, expected operation than that original scope
+suggests, though — worth fixing.
+
+**Likely fix, not yet built**: before `broadcast()`'s current matrix
+guard throws, check for the specific case of one operand being a plain
+number and the other a matrix value (via `isMatrixValue()`) when the
+operator is `*` — return a new matrix (`makeMatrix()`) with the scalar
+multiplied into every cell, elementwise. Leave every *other* matrix-
+operand case (`+`, `-`, matrix-times-matrix, `/`) throwing exactly as
+now — scope this narrowly to scalar multiplication only, not general
+matrix arithmetic, unless asked for more. Display reuses the existing
+`appendMatrixResult()` mechanism already built for `transpose`/`inverse`
+results.
+## Queued — `e` and `π` as built-in constants (small, do first)
+
+User asked directly after being told neither currently exists:
+`e`/`i`/`j` are ordinary undefined single-letter variables today (no
+pre-bound meaning at all), and `\pi` (reachable via `Ctrl+P`, already a
+rendered Greek symbol) is likewise just an identifier with no numeric
+value until the user defines it themselves. Scoped down to `e`/`π`
+only — complex-number support for `i`/`j` is a separate, much bigger
+item (a new value type threading through the whole evaluator, closer
+in size to last session's matrix work) and wasn't asked for here.
+
+**Design**: seed every fresh `vars` object the evaluator creates with
+`{ e: Math.E, "\\pi": Math.PI }` as defaults, keyed exactly the way
+`matchIdentifierAt()` already keys a plain Latin letter (`"e"`) vs. a
+Greek command token (`"\\pi"` — confirm this is the literal string
+`matchIdentifierAt()` returns for `\pi` before relying on it). Must
+stay **overridable** — a user writing `e:=5` on an earlier line should
+shadow the constant for everything after it, the same way any other
+definition already overrides an earlier one; seeding the defaults
+*before* `collectDefinitions()`'s scan (rather than special-casing
+lookup elsewhere) should get this for free, since a later `:=` for the
+same key just overwrites it in the same object.
+
+**Every place that creates a fresh `vars` object needs the same seed,
+not just the main one** — found three today, grep for `vars = {}`
+before assuming it's only one: `collectDefinitions()` (the per-line
+scan every math line's evaluation goes through), and the 2D/3D graph
+sampling loops (`{x: x}` and `{x: gx, y: gy}` respectively) — a graph
+like `@e^x` or `@\pi\cdot x` should work too, not just a plain math
+line. Function-call scoping (`callVars`, which copies outer `vars` then
+overrides parameters) should already inherit the seed for free via that
+copy — verify this live rather than assuming, and also verify a
+function parameter *named* `e` correctly shadows the constant locally,
+the same way `e:=5` does for the rest of the sheet.
 
 ## Queued — symbolic calculus (derivatives & integrals; big, needs its own design pass)
 
@@ -104,29 +162,3 @@ the proposed shortcut (unclaimed; visually matches how a program block
 is bracketed and how piecewise-function notation already uses `{`) —
 open to override before it's built.
 
-## Queued — F1 help overlay
-
-Research done (Omarchy global bindings, grepped every default Hyprland
-binding file — zero matches for a literal F-key anywhere; media/
-brightness keys use separate `XF86...` hardware codes, no overlap at
-all — so all twelve are free with zero compositor-level collision
-risk; and general F-key UX convention, web-searched): no universal
-convention beyond **F1 = Help**, which fits this app's keyboard-centric,
-no-menu-bar design well — the same spirit as the F-key command bar
-classic DOS-era keyboard-driven apps (WordPerfect, Lotus 1-2-3) used,
-which is squarely the kind of app livesheet already resembles.
-
-**Decided design, deliberately small rather than forcing all 12 keys to
-do something**: `F1` toggles a full "Shortcuts & Help" overlay listing
-every current shortcut grouped by category (line-type starters, math-
-field operators, range & Σ/Π, Greek letters, built-in functions,
-graphing, app-level) with a one-line description each — essentially
-README's own shortcut tables, surfaced inside the app instead of making
-the user tab out to read a file. `Escape` closes it (confirmed unused
-in `src/notebook.html`, and the near-universal "dismiss an overlay"
-key). **F2–F12 deliberately left unassigned** — assign one only when a
-real, concrete need shows up, not preemptively. Keep the overlay's
-content and README's shortcut tables from drifting apart — decide
-whether that means generating one from the other, or just a comment on
-both sides pointing at each other as a manual-sync reminder; silent
-drift between them is the one outcome to avoid.
