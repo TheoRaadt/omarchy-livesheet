@@ -348,3 +348,37 @@ trap and its fix.
   `src/notebook.html` change — nothing about this app requires the
   compiled Qt shell for frontend-only verification, and Chromium-based
   testing never touches the shared compositor/focus state at all.
+- **2026-11-25** — The claude-in-chrome extension is not always
+  connected in this environment ("Browser extension is not connected");
+  don't give up on live DOM-driven verification when that happens, and
+  don't fall back to wtype/the compiled app either (see the incident
+  above). A working fallback with zero extra dependencies: serve `src/`
+  with `python3 -m http.server`, launch `chromium --headless=new
+  --no-sandbox --disable-gpu --remote-debugging-port=<port>
+  --remote-allow-origins=* about:blank` in the background, then drive it
+  directly over the DevTools Protocol using Node's own native
+  `WebSocket` global (Node 21+, no puppeteer/playwright install needed,
+  which this sandbox's permission classifier blocks anyway via `pip
+  install`/npm installs not already present). Open a new tab with `PUT
+  http://localhost:<port>/json/new?<url>` — note PUT, not GET; GET
+  returns a plain-text "unsafe HTTP verb" error, not JSON, which throws
+  a confusing `JSON.parse` error one layer removed from the real cause
+  if you don't notice the error string. Wait for `Page.loadEventFired`
+  over the websocket before evaluating anything. Since notebook.html's
+  `<script>` block has no IIFE wrapper, every top-level `var`/`function`
+  (`lines`, `evaluateLatex`, `createPendingLine`, `convertToMath`,
+  `convertToGraph`, `insertChar`, `renderGraph`, ...) is a real global,
+  so `Runtime.evaluate` can call the app's actual internal functions
+  directly — e.g. `createPendingLine(); convertToMath(ln, "");
+  insertChar(ln, "e"); insertChar(ln, "=")` — which drives the real
+  MathQuill field and the real evaluator exactly as a live keystroke
+  would (confirmed live: `insertChar(line, "=")` is what actually
+  triggers `evaluateAndAppend`, so typing "=" via `mathField.typedText
+  ("=")` directly — bypassing `insertChar` — silently does NOT evaluate
+  anything, a test-script bug that looks exactly like an app bug if you
+  don't trace `insertChar`'s own branches first). A real Ctrl+<letter>
+  keydown can still be dispatched faithfully by constructing a
+  `KeyboardEvent` with `ctrlKey:true` and `document.dispatchEvent(evt)`
+  with `target` overridden via `Object.defineProperty` — the app's
+  listener is on `document` in capture phase, so it sees the event
+  regardless of which element it was dispatched from/to.

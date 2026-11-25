@@ -8,8 +8,7 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-24 (matrix functions, equation solver, statistical
-functions, default paper-mode, and inline code-completion shipped — see
+Last updated: 2026-11-25 (`e`/`π` built-in constants shipped — see
 `PROGRESS.md`). Everything below this line is still open.
 
 ## Queued — scalar-matrix multiplication (bug report, small)
@@ -35,41 +34,6 @@ now — scope this narrowly to scalar multiplication only, not general
 matrix arithmetic, unless asked for more. Display reuses the existing
 `appendMatrixResult()` mechanism already built for `transpose`/`inverse`
 results.
-## Queued — `e` and `π` as built-in constants (small, do first)
-
-User asked directly after being told neither currently exists:
-`e`/`i`/`j` are ordinary undefined single-letter variables today (no
-pre-bound meaning at all), and `\pi` (reachable via `Ctrl+P`, already a
-rendered Greek symbol) is likewise just an identifier with no numeric
-value until the user defines it themselves. Scoped down to `e`/`π`
-only — complex-number support for `i`/`j` is a separate, much bigger
-item (a new value type threading through the whole evaluator, closer
-in size to last session's matrix work) and wasn't asked for here.
-
-**Design**: seed every fresh `vars` object the evaluator creates with
-`{ e: Math.E, "\\pi": Math.PI }` as defaults, keyed exactly the way
-`matchIdentifierAt()` already keys a plain Latin letter (`"e"`) vs. a
-Greek command token (`"\\pi"` — confirm this is the literal string
-`matchIdentifierAt()` returns for `\pi` before relying on it). Must
-stay **overridable** — a user writing `e:=5` on an earlier line should
-shadow the constant for everything after it, the same way any other
-definition already overrides an earlier one; seeding the defaults
-*before* `collectDefinitions()`'s scan (rather than special-casing
-lookup elsewhere) should get this for free, since a later `:=` for the
-same key just overwrites it in the same object.
-
-**Every place that creates a fresh `vars` object needs the same seed,
-not just the main one** — found three today, grep for `vars = {}`
-before assuming it's only one: `collectDefinitions()` (the per-line
-scan every math line's evaluation goes through), and the 2D/3D graph
-sampling loops (`{x: x}` and `{x: gx, y: gy}` respectively) — a graph
-like `@e^x` or `@\pi\cdot x` should work too, not just a plain math
-line. Function-call scoping (`callVars`, which copies outer `vars` then
-overrides parameters) should already inherit the seed for free via that
-copy — verify this live rather than assuming, and also verify a
-function parameter *named* `e` correctly shadows the constant locally,
-the same way `e:=5` does for the rest of the sheet.
-
 ## Queued — symbolic calculus (derivatives & integrals; big, needs its own design pass)
 
 Originally bundled into "Batch 2" as plain numeric derivatives/

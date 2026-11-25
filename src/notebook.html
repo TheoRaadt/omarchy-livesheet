@@ -530,6 +530,23 @@
       return null;
     }
 
+    // Built-in numeric constants (e, pi) every fresh `vars` object the
+    // evaluator uses should start with, so a plain identifier lookup finds
+    // them by default anywhere — math lines, matrix cells, 2D/3D graph
+    // expressions, function bodies. Keyed exactly as matchIdentifierAt()
+    // itself would return them for the matching typed input: a bare Latin
+    // letter for "e", and the Greek command token for a typed \pi (Ctrl+P)
+    // — confirmed empirically (not assumed from the LaTeX spec) that
+    // MathQuill's own .latex() emits "\pi" for that key, same token
+    // matchIdentifierAt() matches via GREEK_LOWER's p -> "\\pi" entry
+    // above. Returns a fresh object each call (never a shared one) so one
+    // caller's later "e:=5"-style override into its own `vars` can never
+    // leak into another's. Deliberately excludes i/j (complex numbers) —
+    // out of scope for this constant-seeding feature.
+    function freshBuiltinVars() {
+      return { e: Math.E, "\\pi": Math.PI };
+    }
+
     // Built-in named functions (sin, cos, ..., ln, log, exp, and their
     // less common relatives) that evaluateLatex() recognizes without
     // needing a "name:=..." definition line first — unlike a user-defined
@@ -1260,7 +1277,12 @@
       return { name: name, rest: latex.slice(name.length) };
     }
     function collectDefinitions(line) {
-      var vars = {}, funcs = {};
+      // Seeded with the built-in constants *before* the per-line scan
+      // below runs, so an earlier "e:=5" or "\pi:=1" definition line
+      // overwrites the default right here, in this same object — the
+      // override behavior falls out of plain object-key overwrite, no
+      // special-casing needed in evaluateLatex()'s lookup itself.
+      var vars = freshBuiltinVars(), funcs = {};
       var stop = indexOf(line);
       for (var k = 0; k < stop; k++) {
         var l = lines[k];
@@ -1837,7 +1859,8 @@
       var points = [];
       for (var i = 0; i <= GRAPH_SAMPLES; i++) {
         var x = -GRAPH_DOMAIN + (2 * GRAPH_DOMAIN * i) / GRAPH_SAMPLES;
-        var vars = { x: x };
+        var vars = freshBuiltinVars();
+        vars.x = x;
         for (var k in defs.vars) if (k !== "x") vars[k] = defs.vars[k];
         try {
           var y = evaluateLatex(exprLatex, vars, defs.funcs);
@@ -1921,7 +1944,8 @@
         var row = [];
         for (var j = 0; j < N; j++) {
           var gy = -GRAPH_DOMAIN + (2 * GRAPH_DOMAIN * j) / (N - 1);
-          var vars = { x: gx, y: gy };
+          var vars = freshBuiltinVars();
+          vars.x = gx; vars.y = gy;
           for (var k in defs.vars) if (k !== "x" && k !== "y") vars[k] = defs.vars[k];
           try {
             var z = evaluateLatex(exprLatex, vars, defs.funcs);

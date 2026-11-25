@@ -731,3 +731,22 @@ below was verified by building (`bin/build`), running the backend tests
   unchanged; `Ctrl+B` still inserted β as a fresh line's first
   keystroke; typing "tr" inside a matrix cell showed "trace" positioned
   correctly there too.
+- 2026-11-25: `e` and `\pi` seeded as built-in numeric constants
+  (`Math.E`/`Math.PI`) in every fresh `vars` object the evaluator
+  creates (`src/notebook.html`): the main per-line `collectDefinitions()`
+  scan and both the 2D and 3D graph-sampling loops, via a shared
+  `freshBuiltinVars()` helper so there's one seed, not three copies.
+  Seeded *before* each scope's own `:=` scan runs, so a user's own
+  `e:=5` overwrites the default in the same object with no special-
+  casing in lookup — confirmed live: `e:=5` on an earlier line makes a
+  later `e=` read `5`, not `2.718282`. Deliberately scoped to `e`/`π`
+  only; `i`/`j` (complex numbers) are untouched — a separate, much
+  bigger item if ever requested. Verified live (headless Chromium over
+  the DevTools Protocol directly, `claude-in-chrome` wasn't connected
+  in this environment — see `.claude/agents/frontend.md`'s dated entry
+  for the fallback recipe, now documented for next time): `e=` →
+  `2.718282`; `\pi=` (via a real `Ctrl+P` keydown, not just inserting
+  the token directly) → `3.141593`; `e:=5` override as above; graph
+  lines `@e^x` (2D) and `e^x - y\cdot\pi` (3D) both sample and render
+  correctly; `f(e):=e+1` then `f(10)=` → `11`, confirming a function
+  parameter named `e` shadows the constant inside that function.
