@@ -638,6 +638,118 @@ below was verified by building (`bin/build`), running the backend tests
     full writeup and the safer alternative this pushed verification
     toward.
 
+- **Symbolic derivatives** (`TODO.md`'s "symbolic calculus" item,
+  phase 1 of 2 — indefinite integrals are phase 2, still queued, see
+  `TODO.md`) — a line typed in Leibniz notation, `d/dx(expr)` (typed
+  naturally: `d`, `/`, `d`, `<var>`, Right-arrow out of the denominator,
+  then the expression), evaluates to the symbolic derivative *formula*
+  of `expr` with respect to `<var>`, not a number at a point.
+  - **Why this needed new infrastructure, not just a new builtin**:
+    every line of `evaluateLatex()` goes straight from LaTeX to a
+    number — there was no expression-tree anywhere in the codebase, and
+    a symbolic result needs one (apply a rule to a node, get back
+    another node, not a value). Built as a brand-new, purely **additive**
+    layer in `src/notebook.html` (confirmed via `git diff | grep '^-'`
+    showing a single non-logic comment line removed, nothing else) —
+    `evaluateLatex()`/`collectDefinitions()` were not touched at all,
+    so every existing math/matrix/graph line's numeric evaluation is
+    unaffected by construction, not just by testing.
+  - **Node shape** (for integrals, phase 2, to reuse — don't redesign
+    it): `{type:"num",value}`, `{type:"var",name}`, `{type:"neg",arg}`,
+    `{type:"add"|"sub"|"mul"|"div", left, right}`,
+    `{type:"pow", base, exp}` (exp is itself a node), `{type:"call",
+    name, arg}` (`name` one of `sin`/`cos`/`tan`/`exp`/`ln`/`log`).
+    Every node is immutable — every function returns a brand-new node,
+    never mutates in place, so the same subtree can safely appear twice
+    in one result (the exponential rule reuses the original `b^f`
+    subtree verbatim).
+  - **Pipeline**, each stage its own reusable top-level function:
+    `parseLatexToTree(latex)` — a full separate recursive-descent
+    parser mirroring `evaluateLatex()`'s own grammar/precedence, but
+    narrower (no ranges/Σ/Π/matrices/user functions/det/trace/solve/
+    stats, and it never touches `vars`/`funcs` — every identifier is
+    just a name until differentiation decides what to do with it) →
+    `differentiate(tree, varName)` → `simplifyTree(tree)` (a small
+    identity-cleanup pass — folds `+0`/`*1`/`^0`/`^1`/double-negation/
+    constant-constant arithmetic, deliberately NOT a general simplifier
+    per the agreed scope, so e.g. the quotient rule on `x/(x+1)` renders
+    as the correct-but-unreduced `\frac{x+1-x}{(x+1)^2}`, not `\frac{1}
+    {(x+1)^2}` — not a bug) → `treeToLatex(tree)` (precedence-aware
+    renderer back to display LaTeX).
+  - **Rules implemented** (the agreed v1 scope — not a general CAS):
+    constant → `0`, the diff variable → `1`, any other variable → `0`
+    (another variable is just as "constant" to a given differentiation
+    as a literal number — `containsVar()` checks this correctly, not a
+    literal-number check), sum/difference linearity, product rule,
+    quotient rule, power rule for a constant exponent, a general
+    exponential rule for a constant base (`d/dx(b^f) = b^f·ln(b)·f'`,
+    covering `exp(f)`/`e^f` the same way as any other base — note `e`
+    is just an ordinary `var` node to this layer, not a recognized
+    constant, so `ln(e)` does NOT simplify away; `d/dx(e^{3x})` renders
+    as the correct-but-unreduced `e^{3x}\cdot\ln(e)\cdot3`, confirmed
+    live, not a bug), `sin`/`cos`/`tan` (`tan` returns `f'/\cos(f)^2`
+    rather than introducing a `sec` node, since `sec` isn't in this
+    layer's vocabulary), `ln` (`f'/f`), `log` (base-10, `f'/(f\cdot
+    \ln10)`, matching this codebase's own existing `\log` → `Math.log10`
+    convention elsewhere, not the calculus-textbook natural-log
+    convention). The chain rule falls out automatically everywhere via
+    "multiply by the inner derivative" at every rule, rather than
+    needing separate handling. Throws (falls back to "can't evaluate
+    yet" UX) on `f(x)^g(x)` (both base and exponent depend on the diff
+    variable) and on any function name outside the six supported — a
+    hyperbolic function (`\sinh` etc.) inside the expression would
+    mis-parse as `\sin`+dangling `h` rather than being recognized or
+    rejected cleanly; a known, documented gap, not fixed since
+    hyperbolic derivatives aren't in scope.
+  - **Trigger syntax, confirmed live, not assumed**: a typed `d`, `/`,
+    `d`, `<var>` produces exactly `\frac{d}{dx}` in MathQuill (the
+    denominator's `d` and the variable are two adjacent single-letter
+    nodes, no separator) — confirmed via the DevTools-Protocol fallback
+    below, not guessed from the LaTeX spec. `matchDerivativeTrigger()`
+    recognizes this shape specifically (numerator trims to exactly `d`,
+    denominator is exactly `d` + one identifier token and nothing else)
+    so it never collides with an ordinary typed fraction/division;
+    checked first in `evaluateAndAppend()`, before the numeric path
+    runs at all, falling through (returns `null`) to the ordinary
+    numeric evaluator for anything that doesn't match. Works for a
+    Greek diff variable too (`d/d\beta`), confirmed live.
+  - **Display**: a new, deliberately generic `appendFormulaResult(line,
+    latex)` — any LaTeX string in, no derivative-specific assumptions —
+    renders a read-only `MQ.StaticMath` as a DOM sibling of the line's
+    own field, same spirit/placement as the existing
+    `appendMatrixResult()`. New `.result-formula` CSS class, same
+    pattern as `.result-matrix`. `convertToMath()`'s edit handler now
+    also clears a stale `resultFormulaEl` on any edit, mirroring the
+    existing `resultMatrixEl` cleanup. Built specifically so the
+    upcoming integral feature (`TODO.md`) can reuse this exact function
+    rather than needing its own result-display mechanism. Known,
+    deliberate limitation carried over from the matrix-result pattern:
+    this is DOM-only — `collectDocument()`'s LaTeX export won't include
+    an appended formula result, same pre-existing limitation matrix
+    results already have, not a new regression.
+  - One inline code comment (on the exponential rule) was found and
+    fixed during review: it originally claimed `ln(e)` "simplifies to 1
+    in `simplifyTree()` below," which contradicts both the actual code
+    (`simplifyTree()`'s `call` case has no such special case) and the
+    live-tested output above — corrected to accurately describe the
+    real, documented behavior instead.
+  - Verified with a Node-level test of the parse/differentiate/
+    simplify/render pipeline (29 assertions covering every rule above,
+    including the required chain-rule composition `d/dx\sin(x^2)`, and
+    both positive/negative `matchDerivativeTrigger()` cases), and live
+    against the real `src/notebook.html` (headless Chromium over the
+    DevTools Protocol via Node's native `WebSocket` — `claude-in-chrome`
+    wasn't connected in this environment; recipe documented in
+    `.claude/agents/frontend.md`'s 2026-11-25 entry). `bin/build`/
+    `bin/test` clean, 7/7, confirmed again after the comment fix above.
+    Live: `d/dx(x^2)` → `2\cdot x`; `d/dx\sin(x^2)` → `\cos(x^2)\cdot2
+    \cdot x`; `d/dx(x^3+2x)` → `3x^2+2`; backspacing after a result
+    clears the stale formula widget correctly. Regression spot-check,
+    same Chromium session: `2+3=` → `5`, `\sin(0)=` → `0`, `x:=5` then
+    `x+1=` → `6`, and `@\sin(x)` still converts to a graph and renders
+    its curve — all unaffected, confirming the new derivative call site
+    is a genuinely separate branch that never runs for an ordinary line.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.

@@ -124,6 +124,18 @@
     vertical-align: middle;
     margin-left: 8px;
   }
+  /* A FORMULA-valued "=" result (see appendFormulaResult() — currently
+     only a symbolic derivative, TODO.md's "symbolic calculus" item,
+     but deliberately generic so a later integral feature reuses this
+     same mechanism) — same inline-next-to-the-field placement as
+     .result-matrix above, just a single read-only MQ.StaticMath
+     instead of a bracket+grid. */
+  .result-formula {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
   /* A graph line is the "y =" expression field stacked above its plot —
      see convertToGraph()/renderGraph(). Monochrome by design, the same
      as everything else on the page: the curve and axes are drawn in
@@ -1380,11 +1392,471 @@
       return String(Math.round(x * 1e6) / 1e6);
     }
 
+    // --- Symbolic differentiation (TODO.md's "symbolic calculus" item;
+    // this is phase 1 — derivatives only, integrals are a separate
+    // follow-up) --------------------------------------------------------
+    //
+    // Everything evaluateLatex() does above goes straight from LaTeX to
+    // a NUMBER — there's no expression-tree anywhere in this file, and a
+    // symbolic derivative needs one (apply a rule, get back another
+    // expression, not a value). This section is a brand-new, ADDITIVE
+    // layer used ONLY by the derivative trigger (matchDerivativeTrigger()/
+    // insertChar()'s "=" handling below): it does not touch evaluateLatex()
+    // or collectDefinitions(), shares no mutable state with them, and
+    // every existing math/matrix/graph line's numeric evaluation is
+    // completely unaffected — confirmed live, see PROGRESS.md.
+    //
+    // Node shape (the thing a later integral-phase delegation should
+    // build on — kept deliberately small, matching TODO.md's agreed v1
+    // scope, not a general-purpose CAS tree):
+    //   {type:"num", value}                      -- a literal number
+    //   {type:"var", name}                       -- an identifier token
+    //                                                (matchIdentifierAt()
+    //                                                above — one Latin
+    //                                                letter or one Greek
+    //                                                command string)
+    //   {type:"neg", arg}                        -- unary minus
+    //   {type:"add"|"sub"|"mul"|"div", left, right}
+    //   {type:"pow", base, exp}                  -- base^exp (exp is a node, not
+    //                                                necessarily a plain number)
+    //   {type:"call", name, arg}                 -- name is one of
+    //                                                "sin"/"cos"/"tan"/"exp"/"ln"/"log"
+    // Every node is immutable once built — every function below reads a
+    // node and returns a BRAND NEW one, never mutates in place — so the
+    // same subtree can safely appear more than once in a result (e.g.
+    // the exponential rule reuses the original b^f subtree verbatim).
+    function numNode(v) { return { type: "num", value: v }; }
+    function varNode(n) { return { type: "var", name: n }; }
+    function negNode(a) { return { type: "neg", arg: a }; }
+    function addNode(l, r) { return { type: "add", left: l, right: r }; }
+    function subNode(l, r) { return { type: "sub", left: l, right: r }; }
+    function mulNode(l, r) { return { type: "mul", left: l, right: r }; }
+    function divNode(l, r) { return { type: "div", left: l, right: r }; }
+    function powNode(b, e) { return { type: "pow", base: b, exp: e }; }
+    function callNode(n, a) { return { type: "call", name: n, arg: a }; }
+
+    // The function names this symbolic layer knows how to differentiate
+    // (TODO.md's agreed scope: sin/cos/tan and exp/e^f and ln/log — not
+    // every NATIVE_BUILTINS/WRAPPED_BUILTINS name evaluateLatex() accepts
+    // numerically). Keyed by the exact LaTeX command text, same spelling
+    // NATIVE_BUILTINS above uses. Deliberately NOT extended to sinh/cosh/
+    // tanh/etc: differentiating one of those would silently mis-parse as
+    // this table's sin/cos/tan plus a dangling "h" (same greedy-prefix
+    // hazard NATIVE_BUILTINS' own ordering comment calls out) since none
+    // of the hyperbolic forms are in this smaller table to check first —
+    // out of this phase's scope, so left as a known gap rather than
+    // worked around.
+    var DERIV_FUNC_NAMES = { "\\sin": "sin", "\\cos": "cos", "\\tan": "tan", "\\ln": "ln", "\\log": "log", "\\exp": "exp" };
+
+    // A standalone {...}-group extractor. Deliberately its own copy
+    // rather than reaching for evaluateLatex()'s parseGroup() — that one
+    // is a closure private to evaluateLatex() and not callable from here;
+    // duplicating this small, generic piece of brace-matching is exactly
+    // the "separate function" approach this whole section is built as.
+    // Returns null (not a throw) when `str[pos]` isn't "{", mirroring
+    // parseBracketGroupT()'s own "no group here" convention below.
+    function extractBraceGroup(str, pos) {
+      if (str[pos] !== "{") return null;
+      var depth = 1, i = pos + 1, start = i;
+      while (depth > 0) {
+        if (i >= str.length) throw new Error("unbalanced {");
+        if (str[i] === "{") depth++;
+        else if (str[i] === "}") depth--;
+        if (depth > 0) i++;
+      }
+      return { content: str.slice(start, i), end: i + 1 };
+    }
+
+    // Parses a self-contained LaTeX expression into the tree shape
+    // above. Mirrors evaluateLatex()'s own grammar/precedence structure
+    // (parseExpr/parseTerm/parsePow/parseUnary/parseAtom, chained the
+    // same loosest-to-tightest way) as its own separate function — see
+    // this section's header comment for why it's a full copy rather than
+    // a shared helper. Deliberately narrower than evaluateLatex(): no
+    // ranges/Σ/Π/matrices/user-defined functions/det/trace/solve/
+    // mean/median/variance/stdev — none of those are needed to
+    // differentiate a plain formula, and this layer never looks anything
+    // up in `vars`/`funcs` at all (every identifier is just a name, not
+    // a value, until differentiate() below decides what to do with it).
+    function parseLatexToTree(latex) {
+      var src = latex, pos = 0;
+      function peek() { return src[pos]; }
+      function skipWs() { while (src[pos] === " " || src[pos] === "~") pos++; }
+      function eat(lit) {
+        skipWs();
+        if (src.startsWith(lit, pos)) { pos += lit.length; return true; }
+        return false;
+      }
+      function parseSub(text) {
+        var savedSrc = src, savedPos = pos;
+        src = text; pos = 0;
+        var v = parseExprT();
+        src = savedSrc; pos = savedPos;
+        return v;
+      }
+      function parseGroupT() {
+        skipWs();
+        var g = extractBraceGroup(src, pos);
+        if (!g) throw new Error("expected {");
+        pos = g.end;
+        return parseSub(g.content);
+      }
+      function parseBracketGroupT() {
+        skipWs();
+        if (src[pos] !== "[") return null;
+        var depth = 1, i = pos + 1, start = i;
+        while (depth > 0) {
+          if (i >= src.length) throw new Error("unbalanced [");
+          if (src[i] === "[") depth++;
+          else if (src[i] === "]") depth--;
+          if (depth > 0) i++;
+        }
+        pos = i + 1;
+        return parseSub(src.slice(start, i));
+      }
+      function atomAheadT() {
+        skipWs();
+        var c = peek();
+        if (c && /[0-9a-zA-Z(]/.test(c)) return true;
+        if (src.startsWith("\\sqrt", pos) || src.startsWith("\\frac", pos) || src.startsWith("\\left(", pos)) return true;
+        if (matchIdentifierAt(src, pos) !== null) return true;
+        for (var k in DERIV_FUNC_NAMES) if (src.startsWith(k, pos)) return true;
+        return false;
+      }
+      function parseExprT() {
+        var v = parseTermT();
+        for (;;) {
+          if (eat("+")) v = addNode(v, parseTermT());
+          else if (eat("-")) v = subNode(v, parseTermT());
+          else break;
+        }
+        return v;
+      }
+      function parseTermT() {
+        var v = parsePowT();
+        for (;;) {
+          if (eat("\\cdot") || eat("\\times") || eat("*")) v = mulNode(v, parsePowT());
+          else if (eat("\\div")) v = divNode(v, parsePowT());
+          else if (atomAheadT()) v = mulNode(v, parsePowT());
+          else break;
+        }
+        return v;
+      }
+      function parsePowT() {
+        var v = parseUnaryT();
+        if (eat("^")) {
+          skipWs();
+          var exp = peek() === "{" ? parseGroupT() : parseUnaryT();
+          v = powNode(v, exp);
+        }
+        return v;
+      }
+      function parseUnaryT() {
+        if (eat("-")) return negNode(parseUnaryT());
+        if (eat("+")) return parseUnaryT();
+        return parseAtomT();
+      }
+      function parseCallArgT() {
+        var usesLeft = eat("\\left(");
+        if (!usesLeft && !eat("(")) throw new Error("expected ( after function name");
+        var arg = parseExprT();
+        if (usesLeft) eat("\\right)"); else eat(")");
+        return arg;
+      }
+      function parseAtomT() {
+        skipWs();
+        if (eat("\\sqrt")) {
+          var idx = parseBracketGroupT();
+          var radicand = parseGroupT();
+          return powNode(radicand, idx !== null ? divNode(numNode(1), idx) : numNode(0.5));
+        }
+        if (eat("\\frac")) {
+          var num = parseGroupT();
+          var den = parseGroupT();
+          return divNode(num, den);
+        }
+        if (eat("\\left(")) { var v = parseExprT(); eat("\\right)"); return v; }
+        if (eat("(")) { var v2 = parseExprT(); eat(")"); return v2; }
+        var m = /^[0-9]+(\.[0-9]+)?/.exec(src.slice(pos));
+        if (m) { pos += m[0].length; return numNode(parseFloat(m[0])); }
+        for (var cmd in DERIV_FUNC_NAMES) {
+          if (eat(cmd)) return callNode(DERIV_FUNC_NAMES[cmd], parseCallArgT());
+        }
+        var ident = matchIdentifierAt(src, pos);
+        if (ident !== null) { pos += ident.length; return varNode(ident); }
+        throw new Error("unexpected token at " + pos + " in " + src);
+      }
+      var result = parseExprT();
+      skipWs();
+      if (pos < src.length) throw new Error("trailing input in derivative expression");
+      return result;
+    }
+
+    // Does `node`'s subtree reference the variable `v` anywhere? Used by
+    // differentiate()'s "pow" case to decide which rule applies —
+    // "constant with respect to v" means "v doesn't occur in it
+    // anywhere", not "it's literally a number": another variable (or an
+    // expression built only from other variables/numbers) is just as
+    // constant for this differentiation as a literal.
+    function containsVar(node, v) {
+      switch (node.type) {
+        case "num": return false;
+        case "var": return node.name === v;
+        case "neg": return containsVar(node.arg, v);
+        case "call": return containsVar(node.arg, v);
+        case "add": case "sub": case "mul": case "div":
+          return containsVar(node.left, v) || containsVar(node.right, v);
+        case "pow": return containsVar(node.base, v) || containsVar(node.exp, v);
+      }
+      return false;
+    }
+
+    // The actual differentiation rules — TODO.md's agreed v1 scope:
+    // constants -> 0, the diff variable itself -> 1, any other variable
+    // -> 0, sum/difference linearity, product rule, quotient rule, the
+    // power rule for a constant exponent, sin/cos/tan, exp/e^f and ln/log
+    // (both via the chain rule, which falls out automatically here from
+    // "multiply by the inner derivative" at every rule, rather than
+    // needing separate handling). Returns a brand-new tree, never
+    // mutates `node`.
+    function differentiate(node, v) {
+      switch (node.type) {
+        case "num": return numNode(0);
+        case "var": return numNode(node.name === v ? 1 : 0);
+        case "neg": return negNode(differentiate(node.arg, v));
+        case "add": return addNode(differentiate(node.left, v), differentiate(node.right, v));
+        case "sub": return subNode(differentiate(node.left, v), differentiate(node.right, v));
+        case "mul":
+          return addNode(
+            mulNode(differentiate(node.left, v), node.right),
+            mulNode(node.left, differentiate(node.right, v))
+          );
+        case "div":
+          return divNode(
+            subNode(mulNode(differentiate(node.left, v), node.right), mulNode(node.left, differentiate(node.right, v))),
+            powNode(node.right, numNode(2))
+          );
+        case "pow": {
+          var baseHasV = containsVar(node.base, v), expHasV = containsVar(node.exp, v);
+          if (!baseHasV && !expHasV) return numNode(0);
+          if (expHasV && !baseHasV) {
+            // Exponential rule: d/dx(b^f) = b^f * ln(b) * f' — covers
+            // exp(f)/e^f the same way as any other constant base. Note:
+            // "e" is just an ordinary var node to this layer (not a
+            // recognized constant), so ln(e) does NOT simplify away in
+            // simplifyTree() below — d/dx(e^{3x}) renders as the
+            // mathematically-correct but unreduced e^{3x}\cdot\ln(e)\cdot3,
+            // confirmed live, not a bug.
+            return mulNode(mulNode(node, callNode("ln", node.base)), differentiate(node.exp, v));
+          }
+          if (baseHasV && !expHasV) {
+            // Power rule: d/dx(f^n) = n * f^(n-1) * f'
+            return mulNode(mulNode(node.exp, powNode(node.base, subNode(node.exp, numNode(1)))), differentiate(node.base, v));
+          }
+          throw new Error("differentiation: a variable base raised to a variable exponent (f(x)^g(x)) is not supported");
+        }
+        case "call": {
+          var f = node.arg, fp = differentiate(f, v);
+          switch (node.name) {
+            case "sin": return mulNode(callNode("cos", f), fp);
+            case "cos": return negNode(mulNode(callNode("sin", f), fp));
+            case "tan": return divNode(fp, powNode(callNode("cos", f), numNode(2)));
+            case "exp": return mulNode(callNode("exp", f), fp);
+            case "ln": return divNode(fp, f);
+            case "log": return divNode(fp, mulNode(f, callNode("ln", numNode(10))));
+            default: throw new Error("differentiation: don't know how to differentiate " + node.name);
+          }
+        }
+      }
+      throw new Error("differentiation: unsupported expression form");
+    }
+
+    // A deliberately small identity-cleanup pass — NOT a general
+    // simplifier (TODO.md explicitly scopes this out): folds +0/-0/*0/
+    // *1//1/^0/^1, double negation, constant-constant arithmetic for
+    // +/-/*, and turns add(a, neg(b))/sub(a, neg(b)) into the more
+    // readable sub(a,b)/add(a,b). Runs bottom-up (children simplified
+    // before the parent is inspected) so a fold that only becomes
+    // possible after a child folds (e.g. "x*1 + 0") is caught by this
+    // same single recursive pass, no fixed-point loop needed.
+    function simplifyTree(node) {
+      if (node.type === "num" || node.type === "var") return node;
+      if (node.type === "neg") {
+        var a = simplifyTree(node.arg);
+        if (a.type === "num") return numNode(-a.value);
+        if (a.type === "neg") return a.arg;
+        return negNode(a);
+      }
+      if (node.type === "call") return callNode(node.name, simplifyTree(node.arg));
+      if (node.type === "pow") {
+        var base = simplifyTree(node.base), exp = simplifyTree(node.exp);
+        if (exp.type === "num" && exp.value === 0) return numNode(1);
+        if (exp.type === "num" && exp.value === 1) return base;
+        if (base.type === "num" && base.value === 1) return numNode(1);
+        if (base.type === "num" && exp.type === "num") return numNode(Math.pow(base.value, exp.value));
+        return powNode(base, exp);
+      }
+      var l = simplifyTree(node.left), r = simplifyTree(node.right);
+      if (node.type === "add") {
+        if (r.type === "neg") return simplifyTree(subNode(l, r.arg));
+        if (l.type === "num" && l.value === 0) return r;
+        if (r.type === "num" && r.value === 0) return l;
+        if (l.type === "num" && r.type === "num") return numNode(l.value + r.value);
+        return addNode(l, r);
+      }
+      if (node.type === "sub") {
+        if (r.type === "neg") return simplifyTree(addNode(l, r.arg));
+        if (r.type === "num" && r.value === 0) return l;
+        if (l.type === "num" && l.value === 0) return simplifyTree(negNode(r));
+        if (l.type === "num" && r.type === "num") return numNode(l.value - r.value);
+        return subNode(l, r);
+      }
+      if (node.type === "mul") {
+        if ((l.type === "num" && l.value === 0) || (r.type === "num" && r.value === 0)) return numNode(0);
+        if (l.type === "num" && l.value === 1) return r;
+        if (r.type === "num" && r.value === 1) return l;
+        if (l.type === "num" && l.value === -1) return simplifyTree(negNode(r));
+        if (r.type === "num" && r.value === -1) return simplifyTree(negNode(l));
+        if (l.type === "num" && r.type === "num") return numNode(l.value * r.value);
+        return mulNode(l, r);
+      }
+      if (node.type === "div") {
+        if (l.type === "num" && l.value === 0) return numNode(0);
+        if (r.type === "num" && r.value === 1) return l;
+        return divNode(l, r);
+      }
+      return node;
+    }
+
+    // Precedence used only to decide where a \left(\right) wrap is
+    // needed when rendering back to LaTeX (treeToLatex() below) — 4 =
+    // atom-like (num/var/call/pow, never need wrapping as an operand),
+    // 3 = * /, 2 = unary -, 1 = + -.
+    function treeLatexPrec(node) {
+      switch (node.type) {
+        case "num": case "var": case "call": case "pow": return 4;
+        case "mul": case "div": return 3;
+        case "neg": return 2;
+        case "add": case "sub": return 1;
+      }
+      return 4;
+    }
+    function wrapParen(latex) { return "\\left(" + latex + "\\right)"; }
+    // Renders a tree back into LaTeX for display — the "formula result"
+    // counterpart of formatNumber() above, for a result that's an
+    // expression rather than a plain value. \frac{}{} is used for
+    // division (its own bar already groups both sides, no extra parens
+    // needed) and explicit \cdot for multiplication (rather than bare
+    // juxtaposition) so a complex generated expression never reads
+    // ambiguously.
+    function treeToLatex(node) {
+      switch (node.type) {
+        case "num": return formatNumber(node.value);
+        case "var": return node.name;
+        case "neg": {
+          var a = treeToLatex(node.arg);
+          return "-" + (treeLatexPrec(node.arg) < 2 ? wrapParen(a) : a);
+        }
+        case "call": return "\\" + node.name + wrapParen(treeToLatex(node.arg));
+        case "pow": {
+          var b = treeToLatex(node.base);
+          var baseAtom = node.base.type === "num" || node.base.type === "var" || node.base.type === "call";
+          return (baseAtom ? b : wrapParen(b)) + "^{" + treeToLatex(node.exp) + "}";
+        }
+        case "div": return "\\frac{" + treeToLatex(node.left) + "}{" + treeToLatex(node.right) + "}";
+        case "mul": {
+          var l = treeToLatex(node.left), r = treeToLatex(node.right);
+          if (treeLatexPrec(node.left) < 2) l = wrapParen(l);
+          if (treeLatexPrec(node.right) < 2) r = wrapParen(r);
+          return l + " \\cdot " + r;
+        }
+        case "add": return treeToLatex(node.left) + " + " + treeToLatex(node.right);
+        case "sub": {
+          var rr = treeToLatex(node.right);
+          if (treeLatexPrec(node.right) <= 1) rr = wrapParen(rr);
+          return treeToLatex(node.left) + " - " + rr;
+        }
+      }
+      throw new Error("cannot render node type " + node.type);
+    }
+
+    // The user-facing trigger: Leibniz notation, typed exactly the way
+    // this app's own "/" shortcut already behaves (MathQuill auto-opens
+    // \frac{}{} on a typed "/" with no special-casing needed here) —
+    // "d", "/", "d", "<var>", Right (to exit the denominator), then the
+    // expression to differentiate. Recognized ONLY when the fraction's
+    // numerator is exactly "d" and the denominator is exactly "d"
+    // followed by one identifier token (matchIdentifierAt) and nothing
+    // else — confirmed live (headless Chromium over the DevTools
+    // Protocol) that typing that exact key sequence produces precisely
+    // "\frac{d}{dx}" (the denominator's "d" and "x" are two separate
+    // single-letter MathQuill nodes with no separator between them, same
+    // as any other two adjacent typed letters), so this string match is
+    // not a guess. Distinguishes this from an ordinary typed fraction
+    // (literal division) purely by the numerator/denominator shape — an
+    // ordinary "\frac{a}{b}" never matches ("a" alone only passes if the
+    // user's variable happens to be named "d", and even then the
+    // denominator must ALSO start with "d" immediately followed by one
+    // more bare identifier and nothing else, which an ordinary division
+    // essentially never looks like).
+    // Returns {varName, exprLatex} on a match, or null (so the caller
+    // falls through to the ordinary numeric evaluateLatex() path, same
+    // as it already does for anything else it can't evaluate) otherwise.
+    function matchDerivativeTrigger(latex) {
+      if (latex.indexOf("\\frac{") !== 0) return null;
+      var g1 = extractBraceGroup(latex, 5);
+      if (!g1 || g1.content.trim() !== "d") return null;
+      var g2 = extractBraceGroup(latex, g1.end);
+      if (!g2) return null;
+      var denom = g2.content.trim();
+      if (denom[0] !== "d") return null;
+      var varToken = matchIdentifierAt(denom, 1);
+      if (varToken === null || 1 + varToken.length !== denom.length) return null;
+      var rest = latex.slice(g2.end).trim();
+      if (rest === "") return null;
+      return { varName: varToken, exprLatex: rest };
+    }
+
+    // The "formula result" display mechanism: a read-only MQ.StaticMath
+    // rendering of a LaTeX string, appended as a sibling of the line's
+    // own field — same spirit, and same DOM placement, as
+    // appendMatrixResult() above (a dedicated result area distinct from
+    // the plain typed-in-place numeric "=" output), but for an arbitrary
+    // rendered formula instead of a matrix grid. Deliberately generic
+    // (any LaTeX string in, no derivative-specific assumptions) so the
+    // integral-phase delegation can call this exact same function for
+    // its own antiderivative result instead of rebuilding a second
+    // result-display mechanism.
+    function appendFormulaResult(line, latex) {
+      var wrap = document.createElement("span");
+      wrap.className = "result-formula";
+      line.el.appendChild(wrap);
+      MQ.StaticMath(wrap).latex(latex);
+      line.resultFormulaEl = wrap;
+    }
+
     // Evaluates everything on the line BEFORE the "=" the user just typed
     // (exprLatex, captured before insertion) and types the result after it.
     // Leaves just the "=" if the expression can't be evaluated yet (e.g. it
     // references a variable that hasn't been defined above).
+    //
+    // The derivative trigger is checked FIRST, before any of
+    // evaluateLatex()'s own numeric path runs at all — a line matching
+    // matchDerivativeTrigger() is routed entirely to the symbolic
+    // tree layer above (parse -> differentiate -> simplify -> render)
+    // and never reaches collectDefinitions()/evaluateLatex(), so an
+    // ordinary line (which never matches the trigger) takes the exact
+    // same path through this function it always has.
     function evaluateAndAppend(line, exprLatex) {
+      var deriv = matchDerivativeTrigger(exprLatex);
+      if (deriv) {
+        try {
+          var tree = parseLatexToTree(deriv.exprLatex);
+          var dtree = simplifyTree(differentiate(tree, deriv.varName));
+          appendFormulaResult(line, treeToLatex(dtree));
+        } catch (e) { /* leave just the "=" , same as a numeric failure */ }
+        return;
+      }
       try {
         var defs = collectDefinitions(line);
         var result = evaluateLatex(exprLatex, defs.vars, defs.funcs);
@@ -1522,9 +1994,13 @@
           // or programmatic (typedText/cmd) alike, so any edit after a
           // matrix result was shown — including backspacing the "="
           // that produced it — clears the now-stale widget; retyping
-          // "=" recomputes and re-appends a fresh one.
+          // "=" recomputes and re-appends a fresh one. A formula result
+          // (see appendFormulaResult() — currently only a symbolic
+          // derivative) is the exact same kind of DOM sibling and needs
+          // the same stale-widget cleanup.
           edit: function () {
             if (line.resultMatrixEl) { line.resultMatrixEl.remove(); line.resultMatrixEl = null; }
+            if (line.resultFormulaEl) { line.resultFormulaEl.remove(); line.resultFormulaEl = null; }
             completionOnFieldEdited(mathField);
           }
         }

@@ -8,43 +8,83 @@ here — this file should only ever describe what's *not* done yet, plus
 enough design context that whoever picks an item up next doesn't have
 to re-derive decisions already made.
 
-Last updated: 2026-11-25 (`e`/`π` built-in constants and scalar-matrix
-multiplication shipped — see `PROGRESS.md`). Everything below this
-line is still open.
+Last updated: 2026-11-25 (`e`/`π` built-in constants, scalar-matrix
+multiplication, and symbolic derivatives shipped — see `PROGRESS.md`).
+Everything below this line is still open.
 
-## Queued — symbolic calculus (derivatives & integrals; big, needs its own design pass)
+## Queued — symbolic integrals (phase 2 of symbolic calculus; build on phase 1's AST, don't re-derive it)
 
-Originally bundled into "Batch 2" as plain numeric derivatives/
-integrals (finite differences, quadrature — the same per-point
-sampling style graphing already uses). Re-scoped 2026-11-24: the user
-was asked explicitly whether an indefinite integral (which has no
-numeric equivalent — it's an antiderivative *formula*, not a value at
-a point) should be dropped, limited to polynomials, or built as a real
-symbolic antiderivative, and chose **full symbolic antiderivative**.
-That decision pulls derivatives along with it for consistency (a formula
-result for one but not the other would be a strange asymmetry), and
-means this item is genuine computer-algebra work, not an extension of
-the existing numeric evaluator.
+Phase 1 (symbolic **derivatives**) shipped 2026-11-25 — see
+`PROGRESS.md`'s entry for the full design. This item is specifically
+the **indefinite-integral/antiderivative** half the user asked for
+when choosing "full symbolic antiderivative" over numeric
+finite-differences/quadrature — re-scoped 2026-11-24, and derivatives
+were pulled in first "for consistency" at the time, but have now
+actually shipped first since they're the simpler direction (a fixed
+set of differentiation rules vs. the open-ended "which technique even
+applies" problem every real integration engine has to solve).
 
-**Why this is its own item, not a sub-task of anything else**: every
-line of `evaluateLatex()` today evaluates LaTeX directly to a number —
-there is no expression-tree/AST representation anywhere in the
-codebase. Symbolic differentiation and integration both require
-building and manipulating an actual tree (apply a rule, get back another
-expression, not a number), then rendering that tree back to LaTeX for
-display. That's a new representation layered under the existing
-evaluator, not a new builtin function alongside `sin`/`det`/etc. No
-design work has been done yet on what that tree's node shape looks like
-or how it coexists with the direct-evaluation path (replace it, or run
-alongside it for symbolic-only call sites?) — that's the next
-delegation's first job on this item.
+**Don't redesign the AST — reuse phase 1's exactly as built**, in
+`src/notebook.html`: the node shapes (`num`/`var`/`neg`/`add`/`sub`/
+`mul`/`div`/`pow`/`call`), `parseLatexToTree()` (parses a self-contained
+LaTeX expression, no `vars`/`funcs` lookup), `simplifyTree()` (small
+identity-cleanup pass, deliberately not a general simplifier — same
+scope limit applies to integral results), `treeToLatex()` (renders a
+tree back to display LaTeX), and `appendFormulaResult(line, latex)`
+(the generic "formula result" DOM widget, sibling of the line's own
+field, read-only `MQ.StaticMath` — built generically specifically so
+this item wouldn't need its own display mechanism). All of these are
+plain top-level functions in `src/notebook.html`, right after
+`formatNumber()` — grep for `parseLatexToTree` to find the whole
+section.
 
-**Agreed v1 scope** (from the user's chosen option, not to be expanded
-without checking back): the standard forms — polynomials (power rule),
-trig, exp/log — and the chain rule for simple compositions. Not a
-general-purpose CAS; keep it bounded to what a derivative/integral
-button on a calculator-grade tool needs, not what a full computer-
-algebra system would eventually grow into.
+**Trigger syntax — not yet decided for integrals, this delegation's
+job**: derivatives settled on typed Leibniz notation (`d`, `/`, `d`,
+`<var>` → MathQuill's own `\frac{d}{dx}` — confirmed live, see
+`matchDerivativeTrigger()`). The analogous integral notation is
+`\int f(x)\,dx` (an integral sign, the integrand, then `dx`) — but
+**confirm live, don't assume, how a user actually types an integral
+sign in this app first**: grep for any existing `\int` handling/
+keyboard shortcut in `src/notebook.html` (there was none as of phase
+1's work finishing), and check whether MathQuill's default typed-`\int`
+behavior (if typeable at all via raw LaTeX command entry) produces
+usable sub/superscript slots that need to be left empty for an
+*indefinite* integral, or whether a dedicated shortcut needs adding
+(this project already has a precedent for adding one, e.g. `Ctrl+P` for
+`\pi`, `Ctrl+B` for Greek — check `.claude/agents/frontend.md` and the
+Greek-letter section of `PROGRESS.md` for that pattern before inventing
+a new one). Whatever trigger-detection function results from this
+(e.g. an `matchIntegralTrigger()` alongside `matchDerivativeTrigger()`)
+should follow the same "return null to fall through to the ordinary
+numeric path" convention `matchDerivativeTrigger()` already
+established, checked at the same point in `evaluateAndAppend()`.
+
+**Agreed v1 scope** (same as derivatives, not to be expanded without
+checking back): polynomials (power rule, i.e. `∫xⁿdx = xⁿ⁺¹/(n+1)` for
+`n ≠ -1`), trig, exp/log, and simple compositions via substitution —
+but note integration is NOT just "run differentiate() backwards";
+genuinely different technique selection (which rule even applies to a
+given integrand) is required, this is real integration-engine design
+work, not a mechanical inverse of phase 1. Keep it bounded to what a
+calculator-grade tool's integral button needs (the standard-forms
+table plus u-substitution for compositions matching something already
+in that table), not a general symbolic-integration system (no
+integration by parts, no partial fractions, no trig-substitution,
+unless a future request asks for more). An integrand this scope can't
+handle should fail gracefully (leave just the typed expression,
+same "can't evaluate yet" UX the numeric path already has for an
+undefined variable) rather than throwing a confusing error or
+guessing.
+
+**Verification standard, same as everything else in this project**:
+both a throwaway Node-level logic test AND live DOM verification
+(prefer `claude-in-chrome`; the documented DevTools-Protocol-via-Node-
+`WebSocket` fallback in `.claude/agents/frontend.md`'s 2026-11-25
+entries is proven to work when that extension isn't connected). Also
+re-run `bin/build`/`bin/test` and spot-check a few ordinary (non-
+calculus) lines still work — phase 1 was built strictly additively
+with zero changes to `evaluateLatex()`/`collectDefinitions()`, and
+phase 2 should hold to that same discipline.
 
 ## Queued — program blocks (biggest item, sequenced after the above)
 
