@@ -442,3 +442,105 @@ trap and its fix.
      whatever depth it was thrown, leaving the line exactly as typed.
      Confirmed live for both `\tan(x)+x` (nested in a sum) and the
      standalone non-linear case.
+- **2026-11-25** — Shipped program blocks (TODO.md's biggest backlog
+  item: a real for/while/if/break/continue/return construct, scoped to
+  one level of nesting). Several non-obvious findings from building and
+  live-testing it:
+  1. **`MathQuill.keystroke("Enter")` does NOT invoke a configured
+     `handlers.enter` callback at all** — confirmed on an ordinary,
+     already-working math line, not just the new program-field code:
+     calling `.keystroke("Enter")` left `lines.length` completely
+     unchanged. `.keystroke("Right")`/`"Left"` DO work via this API (used
+     successfully in this same session's derivative/integral regression
+     checks) — it's specifically Enter that doesn't route through
+     `.keystroke()`. The real mechanism needs a BONA FIDE CDP
+     `Input.dispatchKeyEvent` with `type:"keyDown"` (not `"rawKeyDown"` —
+     that variant never fires the matching keypress/input Chromium
+     normally synthesizes for a character-bearing key, and MathQuill's
+     own internal listener never sees anything to recognize) and
+     `windowsVirtualKeyCode`/`nativeVirtualKeyCode: 13` plus
+     `text:"\r"`/`unmodifiedText:"\r"` set — a plain
+     `document.dispatchEvent(new KeyboardEvent(...))` with `key:"Enter"`
+     also silently fails for this one key, even with `which`/`keyCode`
+     passed to the constructor, because those two properties are
+     getter-only on a real `KeyboardEvent` instance in modern Chromium
+     (constructor-dict values for them are silently ignored) — and this
+     bundled MathQuill build's own internal keydown listener reads
+     `e.which`/`e.keyCode`, not `e.key` (it predates the modern
+     `KeyboardEvent.key` standard). This is why the project's own
+     Ctrl+`<letter>` dispatch trick (`document.dispatchEvent` + a
+     `target` override via `Object.defineProperty`) works fine for every
+     shortcut this app's OWN document-level listener handles (that
+     listener reads `e.key`) but can't be reused to simulate Enter
+     reaching MathQuill's internal handling — the two need genuinely
+     different dispatch mechanisms, not the same trick applied twice.
+  2. Following directly from #1: **a new modifier-key/structural
+     keyboard shortcut must never duplicate a key MathQuill itself
+     already has a configured handler for** (`enter`/`deleteOutOf`/
+     `moveOutOf`) **by also intercepting it at the document level** — an
+     early draft of the program-field key handling added its own `"Enter"`
+     check at the document-capture level (calling `onProgramEnter`
+     directly, then `preventDefault()`+`stopImmediatePropagation()`),
+     which would have made the `handlers.enter` callback wired into
+     `createProgramField()` permanently dead code (document's capture
+     listener always runs before the target's own listeners, so
+     `stopImmediatePropagation()` there means MathQuill's internal
+     handling for that key never even runs). Caught by checking the
+     EXISTING precedent first (neither the hostLine block nor the
+     matrix-cell block intercepts `"Enter"` at the document level at
+     all — they rely purely on MathQuill's own `handlers.enter`) before
+     adding a new one for program fields, and fixed by removing the
+     duplicate and simply not intercepting Enter there, letting it fall
+     through un-prevented the same way every other field already does.
+     `"Tab"` is correctly DIFFERENT and DOES need document-level
+     handling (matrix cells already do this too) — MathQuill has no
+     configurable `"tab"` handler option at all, unlike enter/deleteOutOf/
+     moveOutOf.
+  3. A statement row's "assign" kind is actually two things, not one:
+     `name \leftarrow expr` (write into `vars`) when the field's LaTeX
+     contains a `\leftarrow`, or a bare expression (computed, not bound)
+     when it doesn't. This matters because a program's own LAST
+     top-level statement — the Mathcad-convention "whatever this
+     evaluates to is the program's value" row — is never required to be
+     a named assignment; it's created with the exact same default
+     `"assign"`-kind statement object every other row uses. Missing this
+     and unconditionally requiring `\leftarrow` threw "malformed
+     assignment" on literally the most basic hand-built example
+     (`[s<-0, for i in r: s<-s+i, s]`) — caught only by live-testing the
+     actual end-to-end "=" trigger, not by the Node-level interpreter
+     tests (which had — at that point — only ever been fed statements
+     that already included a trailing redundant self-assignment, masking
+     the gap).
+  4. When `insertStructural()` creates a brand-new `if` block, BOTH
+     `thenBody` and `elseBody` need their own starter statement, not just
+     `thenBody` — `onProgramEnter()`'s header-field case only ever routes
+     Enter into `thenBody`, so an `elseBody` that starts genuinely empty
+     has no way to ever gain its first row through the UI at all (there's
+     no field inside it to focus, and no existing field whose Enter
+     targets it). Caught live, not by reasoning about the code: building
+     the `if/otherwise` scenario by hand hit "Cannot read properties of
+     undefined (reading 'field')" on `ifStmt.elseBody[0]`.
+  5. `collectDefinitions(line)` only ever scans lines strictly BEFORE
+     `line` in the `lines` array (`stop = indexOf(line)`), which is
+     correct for its normal use ("what can this line see") but means
+     calling `collectDefinitions(programLine)` to test "does this program
+     register itself as a callable function" is a no-op by construction
+     — it never includes `programLine`'s own registration. Need a
+     DIFFERENT, later line (exactly how a real user would actually call
+     a function they just defined) to observe the registration; this
+     was a test-harness mistake, not an app bug, but cost a debugging
+     round-trip before the actual cause was clear.
+  6. Comparison operators (`<`,`>`,`=`,`\leq`,`\geq`,`\neq`, added as a
+     prerequisite for `if`/`while`) slot in as a new `parseComparisonExpr`
+     level BELOW the existing `parseExpr` entry point in `evaluateLatex`,
+     binding looser than +/-. This is safe to make the new top-level
+     entry point (replacing `var result = parseExpr()` with
+     `var result = parseComparisonExpr()`) with zero regression risk to
+     any EXISTING line's own evaluation: a literal `=`/`<`/`>` character
+     never appears in the LaTeX `evaluateLatex()` is handed for any
+     ordinary math line, because `insertChar()`'s own `"="` branch
+     captures the expression text BEFORE typing the `"="` keystroke into
+     the field at all — the only way a literal `=`/`<`/`>` ever reaches
+     `evaluateLatex()` is a program's own condition field, which
+     deliberately leaves `"="` un-intercepted (MathQuill types it
+     literally) for exactly this reason.

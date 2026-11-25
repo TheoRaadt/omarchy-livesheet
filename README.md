@@ -50,6 +50,15 @@ Inside a math field:
   the cube-root template filled with `3` and `27` followed by `=` shows
   `= 3`. It also resolves variables defined on earlier lines — `a:3` then
   `b:27` then the *a*-th root of `b` followed by `=` also gives `3`
+- `e` and `π` (type `π` via `Ctrl+P`, see Greek letters below) are
+  built-in constants — no definition needed, e.g. `e=` gives
+  `= 2.718282` and `\pi=` gives `= 3.141593`. Still ordinary identifiers
+  otherwise: defining your own `e:5` on an earlier line shadows the
+  constant for every line after it, the same as any other definition
+- A scalar times a named matrix (`2*A` or `A*2`, either order — see
+  matrices below) multiplies every cell elementwise; every other
+  matrix-involving operation (`+`, `-`, matrix times matrix, division)
+  is still unsupported
 - Common named functions evaluate directly, no definition needed:
   `sin cos tan sec csc cot`, their inverses (`arcsin arccos arctan arcsec
   arccsc arccot`), the hyperbolic versions (`sinh cosh tanh sech csch
@@ -126,6 +135,55 @@ X-Y plot) starts a **graph** instead of a math field:
   the `.tex`/`.pdf` output would need a real plotting package (e.g.
   `pgfplots`), which is out of scope here
 
+Typing `d`, `/`, `d`, a variable name, then the expression to
+differentiate (in Leibniz notation, e.g. `d/dx(x^2)` — the `/` opens an
+ordinary fraction, you're just filling in `d` over `d<var>`) followed
+by `=` gives the **symbolic derivative** as a formula, not a number
+at a point, e.g. `d/dx(x^2)` followed by `=` shows `2x`, and
+`d/dx\sin(x^2)` shows `\cos(x^2)\cdot2x`. Covers polynomials (power
+rule), `sin`/`cos`/`tan`, `exp`/`ln`/`log`, and the chain rule for
+compositions of these — not a general computer-algebra system.
+
+`Ctrl+Shift+I` inserts an **indefinite integral** template (`\int(...)dx`
+— fill in the integrand between the parens, with the differential
+variable already in place after); followed by `=` gives the symbolic
+antiderivative, e.g. filling in `1/x` gives `\ln(x)`, and `\sin(3x)`
+gives `-\cos(3x)/3`. Covers the same standard forms as the derivative
+above, plus linear substitution (`∫f(ax+b)dx`) for simple
+compositions — general substitution, `\tan`/`\ln`/`\log` integrals,
+and anything needing integration by parts are out of scope and leave
+the line unevaluated rather than guessing.
+
+`{` at the start of a line (or right after `f(x):=`, making it that
+function's body) starts a **program block** — a real sequence of
+statements, for short algorithms that don't fit in a single
+expression:
+
+- Inside a statement, `:` means **local assignment** (`x\leftarrow
+  expr`, Mathcad's own program-scoped assignment symbol — distinct
+  from the worksheet-level `:=` everywhere else) rather than defining a
+  sheet-wide variable
+- `Ctrl+Shift+R` inserts a **for** loop (iterating a range variable or
+  a named matrix, flattened), `Ctrl+Shift+W` a **while** loop,
+  `Ctrl+Shift+N` an **if/otherwise** conditional, and
+  `Ctrl+Shift+B`/`T`/`E` insert **break**/**continue**/**return** —
+  at most one loop and one `if` per program, and a loop's or `if`'s
+  own body can only hold plain assignment statements (no nesting a
+  loop inside a loop, or an `if` inside a loop, in this version)
+- A program evaluates to its **last statement's value**, unless an
+  earlier `return` exits it first — e.g. a bare program block with
+  `s\leftarrow0`, a `for i` loop adding `i` into `s`, then a trailing
+  `s`, followed by `=`, sums the loop
+- Comparisons (`<`, `>`, `=`, `\leq`, `\geq`, `\neq`) work inside a
+  `for`/`while`/`if`'s own condition field — they're not available on
+  an ordinary math line otherwise
+- **Tab**/arrow keys navigate between a program's fields; **Enter**
+  adds another statement in the current sequence; **Backspace** on an
+  empty statement removes it (emptying a bare program's only statement
+  reverts the line back to pending, same as a 1×1 matrix)
+- As a function's body (`f(x):={...`), call it afterward exactly like
+  any other function, e.g. `f(5)` followed by `=`
+
 ## Shortcuts
 
 | Key      | Action   |
@@ -133,6 +191,13 @@ X-Y plot) starts a **graph** instead of a math field:
 | `Ctrl+S` | Export   |
 | `Ctrl+Q` | Quit     |
 | `Ctrl+L` | Toggle a dark sheet look (vs. the default white-paper/black-ink) — session-only, not remembered between launches |
+| `Ctrl+Shift+I` | Insert an indefinite-integral template |
+| `Ctrl+Shift+R` | Inside a program block: insert a `for` loop |
+| `Ctrl+Shift+W` | Inside a program block: insert a `while` loop |
+| `Ctrl+Shift+N` | Inside a program block: insert an `if`/`otherwise` |
+| `Ctrl+Shift+B` | Inside a program block: insert `break` |
+| `Ctrl+Shift+T` | Inside a program block: insert `continue` |
+| `Ctrl+Shift+E` | Inside a program block: insert `return` |
 
 ### Greek letters
 

@@ -113,6 +113,61 @@
     align-self: center;
     margin-right: 6px;
   }
+  /* A program block (TODO.md's "program blocks" item — see
+     buildProgramContainer()/convertToProgram()/convertMathToProgram()):
+     a flex row of a left brace-like bracket (reusing the matrix
+     bracket's own border-based look — see .matrix-bracket-left's own
+     comment for why a border rather than a stretched glyph — hence
+     program-bracket is layered ON TOP of matrix-bracket-left, not a
+     standalone replacement for it) and a column of statement rows. */
+  .line.program-line {
+    font-size: 1.3em;
+    display: flex;
+    align-items: stretch;
+  }
+  .program-bracket {
+    margin-right: 10px;
+  }
+  .program-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 0;
+  }
+  /* One statement row — a plain assign/return/break/continue, or a
+     for/while/if header (its own nested .program-body-nested, indented,
+     sits BELOW this flex row as a block-level sibling, not inside it —
+     see renderStatement()'s nestedBody() helper). */
+  .program-stmt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  /* "for"/"while"/"if"/"otherwise"/"∈" — plain static text, never typed
+     into a MathQuill field at all (see this feature's own header
+     comment, by buildProgramContainer(), for why) — same established
+     pattern a graph line's own "y =" label (.graph-ylabel) already
+     uses. */
+  .program-label {
+    opacity: 0.7;
+    font-style: italic;
+  }
+  .program-field {
+    display: inline-block;
+  }
+  /* A for/while/if's own body — one level of indentation only (§6 of
+     the spec: a body never contains another for/while/if), so this
+     never needs to nest inside itself. */
+  .program-body-nested {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-left: 28px;
+    padding-left: 10px;
+    border-left: 1px solid currentColor;
+    opacity: 0.92;
+  }
   /* A matrix-VALUED "=" result on an ordinary math line (see
      appendMatrixResult()) — the same bracket+grid look as a matrix
      LINE above, just inline next to the field instead of being the
@@ -241,6 +296,11 @@
     //   - "graph": one MathQuill field (the "y =" expression, line.mathField
     //     same as "math") plus an SVG plot (line.svg) below it that
     //     redraws on every edit; see convertToGraph()/renderGraph().
+    //   - "program": a statement tree (line.statements — assign/return/
+    //     break/continue, plus at most one for/while and one if, each
+    //     with its own MathQuill field(s) — see the "Program blocks"
+    //     section below) instead of a single field; a program line also
+    //     can revert to pending if emptied out, the same as a matrix.
     // Every line keeps its spot in the `lines` array and in the #notebook
     // DOM in sync, so `lines[i]` and the i-th child of #notebook always
     // refer to the same line.
@@ -294,6 +354,22 @@
       else if (line.type === "matrix") {
         var r = toEnd ? line.rows.length - 1 : 0;
         focusCell(line, r, toEnd ? line.rows[r].length - 1 : 0);
+      }
+      // A program block (TODO.md's "program blocks" item — see
+      // programFieldList() further below): focus its first field when
+      // arriving from above, or its last when arriving from below
+      // (Backspace merging into it, Shift+Tab/Up out of the line after
+      // it) — same "toEnd" convention every other branch here already
+      // follows. A program with no fields at all (shouldn't normally
+      // happen — every program always has at least one starter
+      // statement — but defensive here the same way the matrix branch
+      // above implicitly assumes at least one row/cell too) is simply a
+      // no-op.
+      else if (line.type === "program") {
+        var pfList = programFieldList(line);
+        if (pfList.length === 0) return;
+        var pfEntry = toEnd ? pfList[pfList.length - 1] : pfList[0];
+        programFieldFor(pfEntry.stmt, pfEntry.role).focus();
       }
       else if (toEnd) placeCaretAtEnd(line.el);
       else line.el.focus();
@@ -1216,7 +1292,16 @@
               var callVars = {};
               for (var k in vars) callVars[k] = vars[k];
               for (var pIdx = 0; pIdx < fn.params.length; pIdx++) callVars[fn.params[pIdx]] = args[pIdx];
-              return evaluateLatex(fn.body, callVars, funcs);
+              // A program-block function body (TODO.md's "program blocks"
+              // item — see collectDefinitions()'s "program" case below,
+              // which is what puts a `program` key instead of a `body`
+              // string on this same {params, ...} shape) dispatches to
+              // runProgram() instead of recursing into evaluateLatex() —
+              // the one new branch this feature adds here, reusing
+              // everything else about a function call unchanged
+              // (callVars built exactly the same way either kind of body
+              // gets evaluated with).
+              return fn.program ? runProgram(fn.program, callVars, funcs) : evaluateLatex(fn.body, callVars, funcs);
             }
           }
           if (!(ident in vars)) throw new Error("undefined variable " + ident);
@@ -1225,7 +1310,44 @@
         throw new Error("unexpected token at " + pos + " in " + src);
       }
 
-      var result = parseExpr();
+      // Comparison operators — added for TODO.md's "program blocks" item
+      // (if/while need a boolean condition), checked FIRST against the
+      // existing evaluator for a prerequisite before building anything on
+      // top of it: grepped evaluateLatex() for existing "<"/">"/"\leq"/
+      // "\geq"/"="/"\neq" handling and confirmed none of it existed before
+      // this — this evaluator was arithmetic-only until now. Bound LOOSER
+      // than +/- (parseExpr), so "x+1<y-2" parses as "(x+1)<(y-2)", not
+      // "x+(1<y)-2" — a new precedence level, parseComparisonExpr(), sits
+      // directly below the "var result = ..." entry point, calling
+      // parseExpr() on each side exactly once (comparisons don't chain —
+      // "a<b<c" isn't supported, same scope limit most C-family languages
+      // without Python's chained-comparison special case already impose).
+      // Represented as plain 1/0 (truthy/falsy), consistent with how this
+      // evaluator already represents everything as a plain JS number —
+      // no new boolean type. Multi-char tokens (\leq/\geq/\neq) are
+      // checked before the single-char ones purely for readability; there
+      // is no real greedy-prefix ordering hazard the way NATIVE_BUILTINS'
+      // sinh-before-sin ordering has, since every one of these starts
+      // with "\" and none is a prefix of "<"/">"/"=" or vice versa.
+      // Additive and safe: this only ever sees a literal "<"/">"/"="/
+      // "\leq"/"\geq"/"\neq" character in the LaTeX being evaluated when
+      // one was deliberately typed (a program's if/while condition field)
+      // — every OTHER line's LaTeX is captured by insertChar()'s "="
+      // handling BEFORE the "=" keystroke is ever typed into the field
+      // (see its own comment), so no existing math/matrix/graph line's
+      // evaluated text can ever contain one of these tokens already.
+      function parseComparisonExpr() {
+        var v = parseExpr();
+        if (eat("\\leq")) return broadcast(v, parseExpr(), function (x, y) { return x <= y ? 1 : 0; });
+        if (eat("\\geq")) return broadcast(v, parseExpr(), function (x, y) { return x >= y ? 1 : 0; });
+        if (eat("\\neq")) return broadcast(v, parseExpr(), function (x, y) { return x !== y ? 1 : 0; });
+        if (eat("<")) return broadcast(v, parseExpr(), function (x, y) { return x < y ? 1 : 0; });
+        if (eat(">")) return broadcast(v, parseExpr(), function (x, y) { return x > y ? 1 : 0; });
+        if (eat("=")) return broadcast(v, parseExpr(), function (x, y) { return x === y ? 1 : 0; });
+        return v;
+      }
+
+      var result = parseComparisonExpr();
       skipWs();
       // Anything left over after a complete expression means the grammar
       // above didn't cover something in this LaTeX (or it's malformed) —
@@ -1335,6 +1457,22 @@
           } catch (e) { /* skip bad/circular matrix defs, same as any other definition */ }
           continue;
         }
+        // A program block used as a function's body (TODO.md's "program
+        // blocks" item — l.fnName/l.fnParams are set by
+        // convertMathToProgram() the same way a named matrix's l.name is
+        // set by convertMathToMatrix()). Stored with a `program` key
+        // (the line object itself) instead of a `body` LaTeX string —
+        // evaluateLatex()'s function-call site above checks for this key
+        // to decide whether to run it via runProgram() or the ordinary
+        // recursive-evaluateLatex() path. A BARE program block (no
+        // l.fnName) is intentionally not registered as anything here —
+        // same as an unnamed matrix, it falls through to the
+        // `l.type !== "math"` skip below and is only ever evaluated in
+        // place (see the program-field "=" trigger further down).
+        if (l.type === "program" && l.fnName) {
+          funcs[l.fnName] = { params: l.fnParams, program: l };
+          continue;
+        }
         if (l.type !== "math") continue;
         var latex = l.mathField.latex();
         var lhs = parseDefinitionLHS(latex);
@@ -1376,6 +1514,229 @@
         } catch (e) { /* skip bad/circular defs */ }
       }
       return { vars: vars, funcs: funcs };
+    }
+
+    // --- Program blocks: the interpreter (TODO.md's "program blocks"
+    // item — biggest single item in the backlog). This section is the
+    // pure-logic half only: given a program line's statement tree (built
+    // by the UI section further below) plus `vars`/`funcs`, run it and
+    // return a value. No DOM/MathQuill assumption beyond each statement's
+    // `.field`/`.varField`/`.collField`/`.condField` already being a real
+    // MathQuill field this just calls `.latex()` on — exactly the same
+    // boundary evaluateLatex() itself has with `vars`/`funcs`, kept
+    // deliberately thin so this logic was Node-testable with a plain
+    // mock object in place of a MathQuill field (see PROGRESS.md for the
+    // actual throwaway test run before this was wired into the UI).
+    //
+    // Node shape, decided per the architecture spec handed to this
+    // feature (not derived from anything already in this file, since no
+    // prior feature here had a statement tree):
+    //   {kind:"assign", field}                        -- x <- expr, OR a
+    //                                                     bare expression
+    //                                                     (no "<-" at all)
+    //                                                     when field's
+    //                                                     own LaTeX has
+    //                                                     none — see
+    //                                                     runStatement()'s
+    //                                                     own comment on
+    //                                                     its "assign"
+    //                                                     case for why
+    //   {kind:"return", field}                         -- early-exit value
+    //   {kind:"break"} / {kind:"continue"}             -- no field at all
+    //   {kind:"for", varField, collField, body:[...]}  -- for i in collField
+    //   {kind:"while", condField, body:[...]}
+    //   {kind:"if", condField, thenBody:[...], elseBody:[...]}
+    // `body`/`thenBody`/`elseBody` only ever hold assign/return/break/
+    // continue statements — never another for/while/if — per TODO.md's
+    // agreed v1 scope (one level of nesting only). The interpreter itself
+    // doesn't enforce that (nothing stops runStatement from recursing
+    // into a nested "for" if one were ever constructed), it's enforced
+    // entirely on the UI side (insertStructural()'s "top-level only"
+    // guard below) — same division of labor as e.g. MAX_RANGE_LENGTH
+    // being enforced by parseRangeDefinition() rather than by every
+    // caller of it.
+    //
+    // Control flow (§5 of the spec): break/continue/return are thrown
+    // sentinel objects, consistent with how this evaluator already uses
+    // throw/catch for its own error propagation (an undefined variable,
+    // a malformed range, ...) rather than a new signaling mechanism.
+    // runProgram()'s own catch only ever handles "return" (a loop's catch
+    // handles break/continue, see runStatement()'s "for"/"while" cases);
+    // a break/continue that reaches runProgram() uncaught — used outside
+    // any loop at all — is reported as a clear error, not a silent no-op
+    // or an uncaught exception reaching the UI layer.
+    //
+    // Local scope (§2 of the spec): runProgram() copies `vars` into a
+    // fresh `localVars` object ONCE, at the very top, and every "<-"
+    // assignment/for-loop binding writes into that local copy only —
+    // the caller's own `vars` object is never mutated, so a program
+    // parameter/local variable shadowing an outer sheet variable of the
+    // same name is naturally contained to this one execution, never
+    // persisting across separate calls (confirmed live — see this
+    // feature's own notes in .claude/agent-memory/frontend/).
+    //
+    // Iteration cap (§4, mandatory): both "for" and "while" are capped at
+    // PROGRAM_MAX_ITERATIONS so a `while` with a condition that never
+    // goes false (or a `for` over an unexpectedly huge collection) can't
+    // hang the WebEngineView — it throws a clear, caught-like-any-other-
+    // evaluation-error message instead. 100,000 is picked the same way
+    // MAX_RANGE_LENGTH's 1000 was: a round number comfortably above any
+    // real use of this feature but far below "freezes the UI".
+    var PROGRAM_MAX_ITERATIONS = 100000;
+
+    // Splits a statement field's LaTeX on its (unique, since \leftarrow
+    // is a single atomic MathQuill command, never something a user could
+    // type two of adjacently and have merged the way two typed "."s are —
+    // see this file's own dated lesson on exactly that hazard for ";"'s
+    // \ldots) "\leftarrow" into {name, exprLatex}, or returns null if
+    // there's no "<-" at all (so the caller can treat it as a malformed
+    // statement, the same "just can't evaluate this" outcome every other
+    // parse failure in this file gets). Mirrors parseDefinitionLHS()'s
+    // own "one identifier token, then the rest" shape, just split on a
+    // different marker.
+    function parseProgramAssign(latex) {
+      var arrowAt = latex.indexOf("\\leftarrow");
+      if (arrowAt === -1) return null;
+      var namePart = latex.slice(0, arrowAt);
+      var name = matchIdentifierAt(namePart, 0);
+      if (name === null || name.length !== namePart.length) return null;
+      return { name: name, exprLatex: latex.slice(arrowAt + "\\leftarrow".length) };
+    }
+
+    // Runs a flat list of statements in order, mutating `vars` (the
+    // LOCAL copy runProgram() made — see its own comment) as each
+    // assignment/for/while/if executes, and returns the last one's
+    // value — Mathcad's own "a program evaluates to its last statement"
+    // convention, applied at every level (the whole program via
+    // runProgram(), and each individual for/while/if's own body via this
+    // same function), not just the top level.
+    //
+    // `override`, when non-null, is {stmt, latex}: used ONLY by the
+    // program-field "=" trigger further below, for the one top-level
+    // statement whose field has ALREADY had "=" + nothing-yet typed into
+    // it by the time this runs (see evaluateProgramAndAppend()'s own
+    // comment for why) — every other statement just reads its field's
+    // current `.latex()` directly.
+    function runStatementList(stmts, vars, funcs, override) {
+      var result;
+      for (var i = 0; i < stmts.length; i++) result = runStatement(stmts[i], vars, funcs, override);
+      return result;
+    }
+
+    function statementFieldLatex(stmt, override) {
+      return (override && override.stmt === stmt) ? override.latex : stmt.field.latex();
+    }
+
+    function runStatement(stmt, vars, funcs, override) {
+      if (stmt.kind === "assign") {
+        // A "assign"-kind statement row is actually TWO things, told
+        // apart purely by whether its own field's LaTeX contains a
+        // "\leftarrow" at all: "name <- expr" (write into `vars`) when
+        // it does, or a BARE expression (computed but not bound to any
+        // name) when it doesn't — needed because a program's very last
+        // top-level statement is never forced to be an assignment at
+        // all in Mathcad's own "last statement's value" convention (and
+        // this UI's own createStatementObject("assign") default starter
+        // row is exactly this same shape, used for both cases). Found
+        // live (not anticipated at design time): the trailing "s" row
+        // in a hand-built "[s<-0, for i in r: s<-s+i, s]" program threw
+        // "malformed assignment" before this fallback existed, since
+        // parseProgramAssign() unconditionally requires a "\leftarrow".
+        var latex = statementFieldLatex(stmt, override);
+        var parsed = parseProgramAssign(latex);
+        if (!parsed) return evaluateLatex(latex, vars, funcs);
+        var val = evaluateLatex(parsed.exprLatex, vars, funcs);
+        vars[parsed.name] = val;
+        return val;
+      }
+      if (stmt.kind === "return") {
+        throw { __programSignal: "return", value: evaluateLatex(statementFieldLatex(stmt, override), vars, funcs) };
+      }
+      if (stmt.kind === "break") throw { __programSignal: "break" };
+      if (stmt.kind === "continue") throw { __programSignal: "continue" };
+      if (stmt.kind === "for") {
+        var collection = evaluateLatex(stmt.collField.latex(), vars, funcs);
+        // Accepts either existing collection shape per §9 of the spec: a
+        // range (already a flat array) or a named matrix, the latter
+        // flattened row-major via the exact same flattenCollection()
+        // mean/median/variance/stdev already use — reused as-is, not
+        // reimplemented, which is what makes the matrix case "fall out
+        // essentially for free" the way §9 anticipates. A bare scalar
+        // collection expression (e.g. "for i in 5") is NOT accepted —
+        // flattenCollection() itself throws for one, same as it already
+        // does for mean(5) etc. — and iterating a matrix ROW/COLUMN
+        // specifically (as opposed to the whole flattened matrix) is the
+        // one thing §9 explicitly says to skip if it's not trivial, and
+        // it isn't (no existing representation of "one row of a matrix"
+        // exists anywhere in this file): both are documented limitations,
+        // not built.
+        var items = Array.isArray(collection) ? collection : flattenCollection(collection);
+        if (items.length > PROGRAM_MAX_ITERATIONS) {
+          throw new Error("program: for-loop exceeded " + PROGRAM_MAX_ITERATIONS + " iterations");
+        }
+        var varLatex = stmt.varField.latex();
+        var varName = matchIdentifierAt(varLatex, 0);
+        if (varName === null || varName.length !== varLatex.length) {
+          throw new Error("program: for-loop variable must be a single identifier");
+        }
+        var lastFor;
+        for (var fi = 0; fi < items.length; fi++) {
+          vars[varName] = items[fi];
+          try {
+            lastFor = runStatementList(stmt.body, vars, funcs, override);
+          } catch (e) {
+            if (e && e.__programSignal === "break") break;
+            if (e && e.__programSignal === "continue") continue;
+            throw e;
+          }
+        }
+        return lastFor;
+      }
+      if (stmt.kind === "while") {
+        var iterations = 0, lastWhile;
+        for (;;) {
+          if (!evaluateLatex(stmt.condField.latex(), vars, funcs)) break;
+          if (++iterations > PROGRAM_MAX_ITERATIONS) {
+            throw new Error("program: while-loop exceeded " + PROGRAM_MAX_ITERATIONS + " iterations");
+          }
+          try {
+            lastWhile = runStatementList(stmt.body, vars, funcs, override);
+          } catch (e) {
+            if (e && e.__programSignal === "break") break;
+            if (e && e.__programSignal === "continue") continue;
+            throw e;
+          }
+        }
+        return lastWhile;
+      }
+      if (stmt.kind === "if") {
+        var branch = evaluateLatex(stmt.condField.latex(), vars, funcs) ? stmt.thenBody : stmt.elseBody;
+        return runStatementList(branch, vars, funcs, override);
+      }
+      throw new Error("program: unknown statement kind " + stmt.kind);
+    }
+
+    // The entry point both a function call (evaluateLatex()'s parseAtom,
+    // above) and a bare in-place program block (evaluateProgramAndAppend(),
+    // further below) use. `overrideStmt`/`overrideLatex` are threaded
+    // straight through to runStatementList()'s `override` — see its own
+    // comment; omitted (undefined) for every ordinary call (a function
+    // call is never mid-"=" the way a bare program's own last statement
+    // can be).
+    function runProgram(progLine, vars, funcs, overrideStmt, overrideLatex) {
+      if (!progLine.statements.length) throw new Error("program: empty");
+      var localVars = {};
+      for (var k in vars) localVars[k] = vars[k];
+      var override = overrideStmt ? { stmt: overrideStmt, latex: overrideLatex } : null;
+      try {
+        return runStatementList(progLine.statements, localVars, funcs, override);
+      } catch (e) {
+        if (e && e.__programSignal === "return") return e.value;
+        if (e && (e.__programSignal === "break" || e.__programSignal === "continue")) {
+          throw new Error("program: " + e.__programSignal + " used outside a loop");
+        }
+        throw e;
+      }
     }
 
     // Turns an evaluation result into the text to type after "=": a whole
@@ -2532,6 +2893,567 @@
       return line.name ? line.name + ":=" + body : body;
     }
 
+    // --- Program blocks: the editor (TODO.md's "program blocks" item —
+    // the UI half; the pure-logic interpreter is above, right before
+    // formatNumber()). A "program" line is its own line type, same
+    // dispatch pattern as "math"/"matrix"/"graph" everywhere else in this
+    // file — see focusLine()/collectDocument()/collectDefinitions() for
+    // the new case each of those dispatchers needed, per this project's
+    // own hard-won lesson (.claude/agents/frontend.md) about grepping
+    // EVERY line.type switch, not just the one being worked on.
+    //
+    // Shape: line.statements is the flat top-level sequence (§6 of the
+    // spec: a local assignment, AT MOST one for/while loop, AT MOST one
+    // if/otherwise, and any number of return/break/continue statements,
+    // in any order) — each entry is the same {kind, field/varField/
+    // collField/condField, body/thenBody/elseBody} shape runProgram()
+    // above already consumes. A structural statement's own body is
+    // restricted to plain assign/return/break/continue — never another
+    // for/while/if — enforced here, on the UI side (insertStructural()'s
+    // "top-level only" guard below), per §6's "one level of nesting
+    // only" v1 scope.
+    //
+    // Visual grouping (§7): a single left brace-like bracket spans the
+    // whole block, reusing the exact same CSS border-based bracket
+    // technique a matrix's own brackets already use (see the .matrix-
+    // bracket-left CSS rule's own comment for why a border, not a
+    // stretched glyph) rather than attempting an actual curly-brace
+    // character — simplified on purpose, consistent with this project's
+    // IP-respect rule (the functional idea of brace-grouping is fine to
+    // reuse, a specific app's exact rendering of it is not something
+    // this needed to chase anyway, since nothing here was copied from
+    // one). Nested for/while/if bodies are indented via CSS padding
+    // only, no second bracket.
+    //
+    // Keyboard interaction model actually settled on, after trying (and
+    // rejecting) a per-structure bespoke navigation scheme: every
+    // for/while/if's header field(s) plus every assign/return
+    // statement's single field are flattened into ONE reading-order list
+    // (programFieldList() below) by walking the statement tree exactly
+    // once per keystroke — Left/Right/Tab/Shift+Tab at a field's edge
+    // just steps to the adjacent entry in that flat list (or out to the
+    // notebook line above/below at either end), the same "step to
+    // whatever's next in reading order" idea onMoveOutOf() already uses
+    // for ordinary math lines and matrixMoveOutOf() uses for matrix
+    // cells, just computed fresh each time instead of kept as static
+    // row/column indices (nothing here is a fixed grid, so there's
+    // nothing to precompute and cache). Enter always means "add a new
+    // plain assign statement right after whichever statement contains
+    // the focused field, in that statement's own list" — a header field
+    // of an EMPTY for/while/if (nothing in its body yet) is special-cased
+    // to mean "start this structure's body" instead of "add a sibling
+    // after the whole structure", since that's the only way to ever get
+    // a first statement into a loop/if body at all. Backspace on an
+    // EMPTY field removes that one assign/return/break/continue
+    // statement (never a whole for/while/if structure — deleting an
+    // entire loop/if this way isn't supported in this v1, a documented
+    // rough edge, not an oversight) and, if that was the program's only
+    // remaining top-level statement, reverts the whole line back to a
+    // blank pending line, mirroring convertToMatrix's own
+    // revertToPending() for an emptied 1x1 matrix.
+    //
+    // Inserting a for/while/if/break/continue/return itself needs its
+    // own keystroke, since none of them is a character a user would
+    // otherwise type into a field — see the Ctrl+Shift+R/W/N/B/T/E
+    // bindings in the global keydown listener further below for exactly
+    // which letter was picked for which and why (Mathcad itself has no
+    // bare-key convention for any of these; its real Programming toolbar
+    // inserts them by click, not keystroke, confirmed the same
+    // web-searched-PTC-docs way every other Mathcad-keybinding claim in
+    // this file was).
+    //
+    // "for"/"while"/"if"/"otherwise"/"∈" are rendered as plain static
+    // text labels (.program-label), never typed into a MathQuill field
+    // at all — the same established pattern a graph line's own "y ="
+    // label (.graph-ylabel) already uses. This was a deliberate choice,
+    // not an oversight of the "check whether MathQuill's
+    // autoOperatorNames mechanism already covers these" question the
+    // spec raised: reusing the label pattern sidesteps that whole
+    // question (and the real risk behind it — autoOperatorNames can't be
+    // safely extended in place, see the comment by `var MQ` above) for
+    // every one of these keywords at once, with no MathQuill-recognition
+    // risk at all.
+
+    // Finds the identifier a plain assign/return statement's field
+    // should be focused with `.focus()`, or the matching header field
+    // for a for/while/if — the one place that knows "which field does
+    // this role name mean" so programFieldList()/onProgramMoveOutOf()
+    // don't each need their own copy of this mapping.
+    function programFieldFor(stmt, role) {
+      if (role === "expr") return stmt.field;
+      if (role === "var") return stmt.varField;
+      if (role === "coll") return stmt.collField;
+      if (role === "cond") return stmt.condField;
+      return null;
+    }
+
+    // Walks the whole statement tree once, in reading order, into a flat
+    // [{stmt, role}, ...] list — see this section's header comment for
+    // why this is the whole navigation model. Recurses into a for/while's
+    // `body` or an if's `thenBody`/`elseBody`, but never deeper than
+    // that (§6: a body never contains another structural statement, so
+    // there's no unbounded recursion risk here — this would need to
+    // change only if nesting depth itself ever did).
+    function programFieldList(progLine) {
+      var list = [];
+      function walk(stmts) {
+        for (var i = 0; i < stmts.length; i++) {
+          var s = stmts[i];
+          if (s.kind === "assign" || s.kind === "return") list.push({ stmt: s, role: "expr" });
+          else if (s.kind === "for") { list.push({ stmt: s, role: "var" }); list.push({ stmt: s, role: "coll" }); walk(s.body); }
+          else if (s.kind === "while") { list.push({ stmt: s, role: "cond" }); walk(s.body); }
+          else if (s.kind === "if") { list.push({ stmt: s, role: "cond" }); walk(s.thenBody); walk(s.elseBody); }
+          // break/continue contribute no field at all.
+        }
+      }
+      walk(progLine.statements);
+      return list;
+    }
+    function programFieldIndex(progLine, stmt, role) {
+      var list = programFieldList(progLine);
+      for (var i = 0; i < list.length; i++) if (list[i].stmt === stmt && list[i].role === role) return i;
+      return -1;
+    }
+
+    // Finds which list (progLine.statements itself, or some ancestor
+    // for/while's `body`/if's `thenBody`/`elseBody`) currently holds
+    // `targetStmt`, plus its index and the DOM element new siblings
+    // should be inserted relative to — the one place Enter/Backspace/
+    // insertStructural() below all go to answer "where exactly does this
+    // statement live". Only ever recurses one level deep in practice
+    // (§6), but is written as plain recursion rather than a hard-coded
+    // "check top level, then check one level of bodies" so it stays
+    // correct unchanged if nesting depth is ever revisited later.
+    function locateStatement(progLine, targetStmt) {
+      function search(list, parentEl) {
+        for (var i = 0; i < list.length; i++) {
+          if (list[i] === targetStmt) return { list: list, index: i, parentEl: parentEl };
+          var s = list[i];
+          var found = null;
+          if (s.kind === "for" || s.kind === "while") found = search(s.body, s.bodyEl);
+          else if (s.kind === "if") found = search(s.thenBody, s.thenEl) || search(s.elseBody, s.elseEl);
+          if (found) return found;
+        }
+        return null;
+      }
+      return search(progLine.statements, progLine.bodyEl);
+    }
+
+    // Allocates a fresh statement object of the given kind, with empty
+    // (not-yet-rendered) body arrays for a structural kind — matches
+    // exactly the shape runProgram()/runStatement() above already
+    // expect; `.el`/`.field`/etc. are filled in by renderStatement()
+    // once this is actually placed into the DOM.
+    function createStatementObject(kind) {
+      if (kind === "assign" || kind === "return") return { kind: kind, el: null, field: null };
+      if (kind === "break" || kind === "continue") return { kind: kind, el: null };
+      if (kind === "for") return { kind: "for", el: null, varField: null, collField: null, body: [] };
+      if (kind === "while") return { kind: "while", el: null, condField: null, body: [] };
+      if (kind === "if") return { kind: "if", el: null, condField: null, thenBody: [], elseBody: [] };
+    }
+
+    // Creates one MathQuill field for a single statement-tree slot
+    // (a plain assign/return statement's own expression, or one of a
+    // for/while/if header's var/collection/condition fields) and wires
+    // its Enter/Backspace/Left-Right the same way every other MathQuill
+    // field in this app does — the program-tree equivalent of
+    // addCellToRow()'s per-cell field setup. `containerEl._progField` is
+    // the back-reference the global keydown listener's
+    // resolveProgramField() (and resolveMathField(), for Greek
+    // letters/the integral trigger) resolve a raw DOM event target
+    // through — the same role cellEl._line/_row/_col plays for a matrix
+    // cell, just carrying the statement/role pair instead of a row/
+    // column index.
+    function createProgramField(containerEl, progLine, stmt, role) {
+      containerEl.className = "program-field";
+      var field = MQ.MathField(containerEl, {
+        handlers: {
+          enter: function () { onProgramEnter(progLine, stmt, role); },
+          deleteOutOf: function (dir) { onProgramDeleteOutOf(progLine, stmt, role, dir); },
+          moveOutOf: function (dir) { onProgramMoveOutOf(progLine, stmt, role, dir); },
+          edit: function () { completionOnFieldEdited(field); }
+        }
+      });
+      containerEl._progField = { progLine: progLine, stmt: stmt, role: role, field: field };
+      return field;
+    }
+
+    // Builds (or rebuilds, for a newly-inserted statement) one
+    // statement's DOM row, inserted into `parentEl` right before
+    // `beforeEl` (appended at the end when `beforeEl` is null/undefined)
+    // — recurses into a for/while's `body`/an if's `thenBody`/
+    // `elseBody` to render any statements the new structural statement
+    // was created with already (insertStructural() below always gives a
+    // brand-new for/while/if exactly one starter assign statement in its
+    // body, so this recursion is at most one level deep in practice,
+    // same as everywhere else in this feature).
+    function renderStatement(progLine, stmt, parentEl, beforeEl) {
+      var row = document.createElement("div");
+      row.className = "program-stmt program-stmt-" + stmt.kind;
+      stmt.el = row;
+      if (beforeEl) parentEl.insertBefore(row, beforeEl); else parentEl.appendChild(row);
+
+      function label(text) {
+        var l = document.createElement("span");
+        l.className = "program-label";
+        l.textContent = text;
+        row.appendChild(l);
+      }
+      function fieldSlot() {
+        var s = document.createElement("span");
+        row.appendChild(s);
+        return s;
+      }
+      function nestedBody(stmts) {
+        var nested = document.createElement("div");
+        nested.className = "program-body-nested";
+        row.appendChild(nested);
+        stmts.forEach(function (s) { renderStatement(progLine, s, nested, null); });
+        return nested;
+      }
+
+      if (stmt.kind === "assign") {
+        stmt.field = createProgramField(fieldSlot(), progLine, stmt, "expr");
+      } else if (stmt.kind === "return") {
+        label("return");
+        stmt.field = createProgramField(fieldSlot(), progLine, stmt, "expr");
+      } else if (stmt.kind === "break") {
+        label("break");
+      } else if (stmt.kind === "continue") {
+        label("continue");
+      } else if (stmt.kind === "for") {
+        label("for");
+        stmt.varField = createProgramField(fieldSlot(), progLine, stmt, "var");
+        label("∈"); // Mathcad's own for-each binding symbol (TODO.md)
+        stmt.collField = createProgramField(fieldSlot(), progLine, stmt, "coll");
+        stmt.bodyEl = nestedBody(stmt.body);
+      } else if (stmt.kind === "while") {
+        label("while");
+        stmt.condField = createProgramField(fieldSlot(), progLine, stmt, "cond");
+        stmt.bodyEl = nestedBody(stmt.body);
+      } else if (stmt.kind === "if") {
+        label("if");
+        stmt.condField = createProgramField(fieldSlot(), progLine, stmt, "cond");
+        stmt.thenEl = nestedBody(stmt.thenBody);
+        label("otherwise");
+        stmt.elseEl = nestedBody(stmt.elseBody);
+      }
+      return row;
+    }
+
+    // Enter: see this section's header comment for the two different
+    // meanings this has depending on what's focused.
+    function onProgramEnter(progLine, stmt, role) {
+      if (role === "var" || role === "coll" || role === "cond") {
+        var targetList = stmt.kind === "if" ? stmt.thenBody : stmt.body;
+        var targetEl = stmt.kind === "if" ? stmt.thenEl : stmt.bodyEl;
+        if (targetList.length === 0) {
+          var first = createStatementObject("assign");
+          targetList.push(first);
+          renderStatement(progLine, first, targetEl, null);
+          first.field.focus();
+        } else {
+          programFieldFor(targetList[0], "expr").focus();
+        }
+        return;
+      }
+      var loc = locateStatement(progLine, stmt);
+      if (!loc) return;
+      var next = createStatementObject("assign");
+      loc.list.splice(loc.index + 1, 0, next);
+      renderStatement(progLine, next, loc.parentEl, stmt.el.nextSibling);
+      next.field.focus();
+    }
+
+    // Backspace-when-empty: only a plain assign/return/break/continue
+    // statement (role === "expr", or — for break/continue, which have no
+    // field to even call this from — never reached at all) is ever
+    // removed this way; see the header comment for why a whole
+    // for/while/if structure deleting itself isn't supported in v1.
+    function onProgramDeleteOutOf(progLine, stmt, role, dir) {
+      if (dir !== MQ.L) return;
+      if (role !== "expr") {
+        var list0 = programFieldList(progLine);
+        var idx0 = programFieldIndex(progLine, stmt, role);
+        if (idx0 > 0) programFieldFor(list0[idx0 - 1].stmt, list0[idx0 - 1].role).focus();
+        else { var i0 = indexOf(progLine); if (i0 > 0) focusLine(lines[i0 - 1], true); }
+        return;
+      }
+      var loc = locateStatement(progLine, stmt);
+      if (!loc) return;
+      if (loc.parentEl === progLine.bodyEl && progLine.statements.length === 1) {
+        focusLine(revertProgramToPending(progLine), true);
+        return;
+      }
+      var flist = programFieldList(progLine);
+      var fidx = programFieldIndex(progLine, stmt, role);
+      var prevEntry = fidx > 0 ? flist[fidx - 1] : null;
+      stmt.el.remove();
+      loc.list.splice(loc.index, 1);
+      if (prevEntry) programFieldFor(prevEntry.stmt, prevEntry.role).focus();
+      else { var i1 = indexOf(progLine); focusLine(i1 > 0 ? lines[i1 - 1] : progLine, true); }
+    }
+
+    // Left/Right at a field's edge: step to the adjacent entry in
+    // reading order, or out to the notebook line above/below at either
+    // end of the whole program — see this section's header comment.
+    function onProgramMoveOutOf(progLine, stmt, role, dir) {
+      var list = programFieldList(progLine);
+      var idx = programFieldIndex(progLine, stmt, role);
+      if (dir === MQ.L) {
+        if (idx > 0) programFieldFor(list[idx - 1].stmt, list[idx - 1].role).focus();
+        else { var i = indexOf(progLine); if (i > 0) focusLine(lines[i - 1], true); }
+      } else if (dir === MQ.R) {
+        if (idx < list.length - 1) programFieldFor(list[idx + 1].stmt, list[idx + 1].role).focus();
+        else { var i2 = indexOf(progLine); if (i2 < lines.length - 1) focusLine(lines[i2 + 1]); }
+      }
+    }
+
+    // Reverses convertToProgram()/convertMathToProgram(): turns the (now
+    // fully emptied) program line back into a plain pending line — the
+    // program-block equivalent of revertToPending() above for an emptied
+    // 1x1 matrix.
+    function revertProgramToPending(line) {
+      var el = document.createElement("div");
+      el.className = "line pending";
+      el.contentEditable = "true";
+      el.spellcheck = false;
+      line.el.replaceWith(el);
+      line.el = el;
+      line.type = "pending";
+      el._line = line;
+      delete line.statements;
+      delete line.bodyEl;
+      delete line.fnName;
+      delete line.fnParams;
+      wireLineKeydown(line);
+      wirePendingInput(line);
+      return line;
+    }
+
+    // Shared by convertToProgram() (bare, "{" on a pending line) and
+    // convertMathToProgram() (a function body, "{" on a math line
+    // already showing exactly "f(x):=") — builds the brace+body DOM
+    // (see this section's header comment on why a single CSS border
+    // bracket, reusing the matrix bracket's own look, stands in for a
+    // real curly brace) and, when `fnName` is given, a "f(x) := " label
+    // in front of it, mirroring how a named matrix's own label
+    // (matrix-name-label) sits in front of ITS bracket+grid. Does not
+    // add any statements itself — both callers follow this with one
+    // starter "assign" statement, the same way buildMatrixContainer()'s
+    // own callers always follow it with a starter row+cell.
+    function buildProgramContainer(line, fnName, fnParams) {
+      var container = document.createElement("div");
+      container.className = "line program-line";
+      line.el.replaceWith(container);
+      line.el = container;
+      line.type = "program";
+      line.statements = [];
+      line.fnName = fnName || null;
+      line.fnParams = fnParams || null;
+      container._line = line;
+
+      if (line.fnName) {
+        var nameLabel = document.createElement("span");
+        nameLabel.className = "matrix-name-label";
+        nameLabel.textContent = line.fnName + "(" + line.fnParams.join(", ") + ") := ";
+        container.appendChild(nameLabel);
+      }
+
+      var bracket = document.createElement("div");
+      bracket.className = "matrix-bracket matrix-bracket-left program-bracket";
+      var body = document.createElement("div");
+      body.className = "program-body";
+      container.appendChild(bracket);
+      container.appendChild(body);
+      line.bodyEl = body;
+    }
+
+    // Bare program block: Mathcad has no bare-key convention for this at
+    // all (see §8's own note, confirmed before picking anything) — "{"
+    // was the proposed, unclaimed shortcut and stayed unclaimed through
+    // this feature's own build, so it's used as proposed. Triggered from
+    // a pending line exactly like "[" (matrix)/"@" (graph) above it in
+    // wirePendingInput().
+    function convertToProgram(line) {
+      buildProgramContainer(line, null, null);
+      var first = createStatementObject("assign");
+      line.statements.push(first);
+      renderStatement(line, first, line.bodyEl, null);
+      first.field.focus();
+    }
+
+    // A program block AS A FUNCTION BODY: "{" typed on a math line
+    // already showing exactly "f(x):=" (or "f(x,y):=", ...) and nothing
+    // else — see the global keydown listener's own "{" handling further
+    // below, the direct analogue of "[" converting "A:=" into a named
+    // matrix. §1 of the spec: this is what lets collectDefinitions()
+    // register `name` as a program-backed function (see its own "program"
+    // case above) instead of the usual LaTeX-string-bodied one.
+    function convertMathToProgram(line, name, params) {
+      buildProgramContainer(line, name, params);
+      var first = createStatementObject("assign");
+      line.statements.push(first);
+      renderStatement(line, first, line.bodyEl, null);
+      first.field.focus();
+    }
+
+    // Mirrors the "[" matrix-naming check in the global keydown listener
+    // below: recognizes "f(x):=" typed so far on a math line, with
+    // NOTHING else yet. Deliberately its OWN small duplicate parser
+    // (same convention parseLatexToTree() already established — see its
+    // header comment — of copying a small grammar fragment rather than
+    // reaching into collectDefinitions()'s own private inline version of
+    // this exact same function-signature check) instead of refactoring
+    // that working code to share this.
+    function matchFunctionSignatureSoFar(latex) {
+      var lhs = parseDefinitionLHS(latex);
+      if (!lhs) return null;
+      var afterName = lhs.rest;
+      var usesLeft = afterName.indexOf("\\left(") === 0;
+      if (!usesLeft && afterName[0] !== "(") return null;
+      var afterParen = afterName.slice(usesLeft ? 6 : 1);
+      var params = [];
+      for (;;) {
+        var p = matchIdentifierAt(afterParen, 0);
+        if (p === null) return null;
+        params.push(p);
+        afterParen = afterParen.slice(p.length);
+        if (afterParen[0] === ",") { afterParen = afterParen.slice(1); continue; }
+        break;
+      }
+      var closeLit = usesLeft ? "\\right)" : ")";
+      if (afterParen.indexOf(closeLit) !== 0) return null;
+      var afterClose = afterParen.slice(closeLit.length);
+      return afterClose === ":=" ? { name: lhs.name, params: params } : null;
+    }
+
+    // Inserts a brand-new for/while/if structure right after whichever
+    // top-level statement currently contains the focused field, with one
+    // starter "assign" statement already in its body (so there's
+    // somewhere for the cursor to land next via Enter, same as a
+    // brand-new matrix starting with one empty cell). Top-level only
+    // (§6: one level of nesting) — a no-op when the currently-focused
+    // field belongs to a NESTED body row instead. Also enforces "at most
+    // one loop"/"at most one if" (§6) by simply declining to insert a
+    // second one — not an error, just silently does nothing, the same
+    // "nothing happens" UX this app already gives e.g. Ctrl+Shift+S/P
+    // for Greek Sigma/Pi (deliberately omitted, see GREEK_UPPER's own
+    // comment) rather than a confusing popup for an edge case.
+    function insertStructural(progLine, atStmt, kind) {
+      var loc = locateStatement(progLine, atStmt);
+      if (!loc || loc.parentEl !== progLine.bodyEl) return;
+      if ((kind === "for" || kind === "while") &&
+          progLine.statements.some(function (s) { return s.kind === "for" || s.kind === "while"; })) return;
+      if (kind === "if" && progLine.statements.some(function (s) { return s.kind === "if"; })) return;
+      var stmt = createStatementObject(kind);
+      // Both branches of an "if" need their own starter row — found
+      // live: seeding only thenBody left elseBody permanently empty
+      // with no way to focus/add a row into it at all (onProgramEnter's
+      // "cond" case only ever routes Enter into thenBody, never
+      // elseBody, so an elseBody that starts empty can never gain its
+      // first row through the UI) — "otherwise" has to be just as usable
+      // as "if" per §6 of the spec, not a dead branch.
+      if (kind === "if") {
+        stmt.thenBody.push(createStatementObject("assign"));
+        stmt.elseBody.push(createStatementObject("assign"));
+      } else {
+        stmt.body.push(createStatementObject("assign"));
+      }
+      loc.list.splice(loc.index + 1, 0, stmt);
+      renderStatement(progLine, stmt, loc.parentEl, atStmt.el.nextSibling);
+      (kind === "for" ? stmt.varField : stmt.condField).focus();
+    }
+
+    // Inserts a break/continue/return statement right after whichever
+    // statement currently contains the focused field, at THAT
+    // statement's own level (top-level or nested — unlike
+    // insertStructural() above, these are always allowed at either
+    // level: break/continue only make runtime sense inside a loop body,
+    // but that's enforced by runProgram()'s own "used outside a loop"
+    // error at evaluation time, not by refusing to let the UI insert one
+    // somewhere that would be wrong — the same "catch it when it
+    // actually runs, not when it's typed" philosophy this evaluator
+    // already applies to e.g. an undefined variable).
+    function insertKeywordStatement(progLine, atStmt, kind) {
+      var loc = locateStatement(progLine, atStmt);
+      if (!loc) return;
+      var stmt = createStatementObject(kind);
+      loc.list.splice(loc.index + 1, 0, stmt);
+      renderStatement(progLine, stmt, loc.parentEl, atStmt.el.nextSibling);
+      if (stmt.field) stmt.field.focus();
+    }
+
+    // Resolves a raw DOM event target to the program-field back-
+    // reference createProgramField() stamped on it, or null — the
+    // program-tree analogue of the matrix-cell block's own
+    // `cellEl._line` resolution further down in the global keydown
+    // listener.
+    function resolveProgramField(target) {
+      var el = target.closest ? target.closest(".program-field") : null;
+      return el && el._progField ? el._progField : null;
+    }
+
+    // The "=" trigger for a BARE program block (§10 of the spec: display
+    // mechanism matches the final value's type, reusing exactly
+    // appendMatrixResult()/appendFormulaResult() — no new display
+    // mechanism built). Only ever called for the program's own LAST
+    // top-level statement's field (see the global keydown listener's own
+    // gate for this) — `lastStmt`/`lastStmtLatex` let runProgram() read
+    // that one statement's CAPTURED pre-"=" text instead of its live
+    // field (which, by the time this runs, already has "=" typed into
+    // it — see the caller's own comment for why "capture before, type
+    // after" has to happen in this order, the same sequencing
+    // insertChar()'s own "=" branch already uses for an ordinary math
+    // line). A matrix result is never possible here directly — only via
+    // a bare scalar program whose value happens to be a matrix (e.g. a
+    // program that just returns a named matrix variable) — appendFormulaResult()
+    // is unreachable in practice (no symbolic-tree value a program can
+    // produce), listed anyway for exact parity with evaluateAndAppend()'s
+    // own three-way dispatch.
+    function evaluateProgramAndAppend(progLine, triggerField, lastStmt, lastStmtLatex) {
+      try {
+        var defs = collectDefinitions(progLine);
+        var result = runProgram(progLine, defs.vars, defs.funcs, lastStmt, lastStmtLatex);
+        if (isMatrixValue(result)) appendMatrixResult(progLine, result.rows);
+        else triggerField.typedText(formatNumber(result));
+      } catch (e) { /* leave just the "=" , same convention as evaluateAndAppend */ }
+    }
+
+    // Export degradation for a program block (collectDocument()'s
+    // "program" case below) — there's no real LaTeX program-block
+    // environment to target (same situation renderGraph's own export
+    // comment describes for a plotted curve: no pgfplots-equivalent in
+    // scope), so this flattens the statement tree into readable
+    // \text{...}-labelled LaTeX, best-effort, never fed back into
+    // MathQuill itself (only ever handed to the C++ Backend for export,
+    // same as matrixLatex()'s \begin{bmatrix} string above, which
+    // MathQuill can't render either — see that function's own comment).
+    function programExportLatex(line) {
+      function stmtLatex(stmt) {
+        if (stmt.kind === "assign") return stmt.field.latex();
+        if (stmt.kind === "return") return "\\text{return }" + stmt.field.latex();
+        if (stmt.kind === "break") return "\\text{break}";
+        if (stmt.kind === "continue") return "\\text{continue}";
+        if (stmt.kind === "for") {
+          return "\\text{for }" + stmt.varField.latex() + "\\in " + stmt.collField.latex() +
+            "\\text{: }" + stmt.body.map(stmtLatex).join(",\\ ");
+        }
+        if (stmt.kind === "while") {
+          return "\\text{while }" + stmt.condField.latex() +
+            "\\text{: }" + stmt.body.map(stmtLatex).join(",\\ ");
+        }
+        if (stmt.kind === "if") {
+          return "\\text{if }" + stmt.condField.latex() + "\\text{: }" + stmt.thenBody.map(stmtLatex).join(",\\ ") +
+            "\\text{ otherwise: }" + stmt.elseBody.map(stmtLatex).join(",\\ ");
+        }
+        return "";
+      }
+      var body = line.statements.map(stmtLatex).join(",\\ ");
+      var prefix = line.fnName ? line.fnName + "(" + line.fnParams.join(",") + "):=" : "";
+      return prefix + "\\left\\{" + body + "\\right\\}";
+    }
+
     // A graph always plots over this fixed, symmetric x-domain — no axis-
     // limit placeholders to fill in, unlike a real Mathcad X-Y plot. Kept
     // simple on purpose: GRAPH_SAMPLES points are evaluated on every
@@ -2889,6 +3811,14 @@
           convertToMatrix(line);
           return;
         }
+        // A bare program block (TODO.md's "program blocks" item). "{"
+        // was the proposed, confirmed-unclaimed shortcut (see §8's own
+        // note) — the program-block analogue of "[" for a matrix.
+        if (text === "{") {
+          line.el.textContent = "";
+          convertToProgram(line);
+          return;
+        }
         // Mathcad's own bare shortcut for inserting an X-Y plot.
         if (text === "@") {
           line.el.textContent = "";
@@ -2957,6 +3887,13 @@
     // not handled there (falls through to whatever the browser/contenteditable
     // would otherwise do with that Ctrl combo).
     function resolveMathField(target) {
+      // A program-field (TODO.md's "program blocks" item) first, same
+      // position in this resolution chain as the matrix-cell check right
+      // below it — both are "a smaller field nested inside a bigger line
+      // object" shapes, checked ahead of the plain math-line/graph-line
+      // case.
+      var progEl = target.closest ? target.closest(".program-field") : null;
+      if (progEl && progEl._progField) return progEl._progField.field;
       var cellEl = target.closest ? target.closest(".matrix-cell") : null;
       if (cellEl && cellEl._line) return cellEl._line.rows[cellEl._row][cellEl._col];
       var hostLineEl = target.closest ? target.closest(".math-line, .graph-line") : null;
@@ -3270,6 +4207,61 @@
         return;
       }
 
+      // --- Program-block structural inserts: Ctrl+Shift+R/W/N/B/T/E ----
+      // TODO.md's "program blocks" item: for/while/if/break/continue/
+      // return each need their own insertion keystroke, since none of
+      // them is a character a user would type into a field otherwise
+      // (see this feature's own header comment, by buildProgramContainer()
+      // above, for why they're rendered as static labels rather than
+      // typed text at all). Mathcad itself has no bare-key convention
+      // for any of these — its real Programming toolbar inserts them by
+      // click (PTC's own docs, web-searched the same way every other
+      // Mathcad-keybinding claim in this file was) — so this app picks
+      // its own six letters, chosen only from the ones confirmed free of
+      // every existing Ctrl/Ctrl+Shift binding (not a single bare
+      // Ctrl+<letter> was free — GREEK_LOWER plus this app's own s/q/l
+      // claims every one of the 26 — so these are all Ctrl+SHIFT+<letter>,
+      // checked against GREEK_UPPER instead, which leaves b/e/h/k/m/n/p/
+      // r/t/w free):
+      //   R — for   (mnemonic: a for-loop here iterates a Range/
+      //              collection value; "F" itself is GREEK_UPPER's Phi)
+      //   W — while (exact mnemonic, free either way)
+      //   N — if    ("I" is already the integral trigger above, so N
+      //              stands in — no real mnemonic, just one of the few
+      //              free letters left)
+      //   B — break (exact mnemonic, free)
+      //   T — continue ("C" is left for copy/paste; T from "conTinue")
+      //   E — return    ("R" is taken by for above; E from "rEturn")
+      if (mod && e.shiftKey && !e.altKey && /^[rwnbte]$/i.test(e.key)) {
+        // Unconditional preventDefault/stopImmediatePropagation here,
+        // NOT gated on pfIns resolving (unlike the Greek-letter/integral
+        // patterns above, which deliberately let the browser default
+        // through when nothing MathQuill-shaped is focused — see their
+        // own comments). "R" specifically collides with Chromium's own
+        // hard-reload shortcut, and this app has no save/persistence at
+        // all (session-only) — letting that through when the user isn't
+        // actually focused in a program field (e.g. a stray keystroke
+        // while editing an ordinary line) would silently wipe the whole
+        // notebook, a categorically worse outcome than the benign "open
+        // DevTools"/cosmetic defaults the other patterns accept leaving
+        // unguarded. Applied to all six letters here for consistency,
+        // not just "r" — there's no upside to preserving any of their
+        // browser defaults while a program field exists on the sheet.
+        e.preventDefault(); e.stopImmediatePropagation();
+        var pfIns = resolveProgramField(e.target);
+        if (pfIns) {
+          switch (e.key.toLowerCase()) {
+            case "r": insertStructural(pfIns.progLine, pfIns.stmt, "for"); break;
+            case "w": insertStructural(pfIns.progLine, pfIns.stmt, "while"); break;
+            case "n": insertStructural(pfIns.progLine, pfIns.stmt, "if"); break;
+            case "b": insertKeywordStatement(pfIns.progLine, pfIns.stmt, "break"); break;
+            case "t": insertKeywordStatement(pfIns.progLine, pfIns.stmt, "continue"); break;
+            case "e": insertKeywordStatement(pfIns.progLine, pfIns.stmt, "return"); break;
+          }
+        }
+        return;
+      }
+
       // Nothing below this point wants to intercept a Ctrl/Cmd combo
       // (copy, paste, select-all, ...), so let those all through as-is.
       if (mod) return;
@@ -3347,6 +4339,72 @@
           // left of the cursor.
           resetCompletion();
         }
+      }
+
+      // --- Program-block statement-field keys --------------------------
+      // TODO.md's "program blocks" item. Enter is DELIBERATELY not
+      // intercepted here — onProgramEnter() is already wired as this
+      // field's own MathQuill "enter" handler (createProgramField()
+      // above), the exact same mechanism every math-line/matrix-cell
+      // field's own Enter already relies on (see onEnter()'s/
+      // addCellToRow()'s own handlers.enter) instead of the document
+      // listener duplicating it — letting the keystroke fall through
+      // un-intercepted here is what lets MathQuill's own internal
+      // key-handling reach that configured handler at all. Tab DOES need
+      // handling here, unlike Enter: MathQuill has no configurable "Tab"
+      // option the way it does enter/deleteOutOf/moveOutOf (matrix cells
+      // already intercept Tab at this same document level for the exact
+      // same reason — see the "Matrix-cell keys" block below). Reuses
+      // the flat reading-order model (programFieldList()) this feature's
+      // own header comment describes. ":" is the program-scoped equivalent
+      // of the SAME physical key already meaning worksheet-level ":="
+      // on an ordinary math line (insertChar()) — Mathcad itself uses a
+      // genuinely different symbol (←, not :=) for local assignment
+      // inside a program, which is exactly what this reuses the key for
+      // instead of inventing a new one. ";"/"\\"/"|"/"$"/"#" go through
+      // insertChar() exactly like an ordinary math line (sqrt, nth root,
+      // range, Σ, Π all make just as much sense inside a program
+      // statement's own expression). "=" is the bare-program evaluate
+      // trigger (§10 of the spec) ONLY for the program's own last
+      // top-level statement when it isn't a function body — everywhere
+      // else (a header field, a nested body row, a function-body
+      // program) it's deliberately left un-intercepted so MathQuill
+      // types it literally, the same default a graph line's own
+      // expression field already relies on for the identical reason
+      // (see insertChar()'s own "=" branch and its `hostLine.type !==
+      // "graph"` guard) — which is exactly the equality-comparison
+      // behavior an if/while condition field needs.
+      var pf = resolveProgramField(e.target);
+      if (pf) {
+        if (e.key === "Tab") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          onProgramMoveOutOf(pf.progLine, pf.stmt, pf.role, e.shiftKey ? MQ.L : MQ.R);
+          return;
+        }
+        if (e.key === ":" && pf.stmt.kind === "assign" && pf.role === "expr") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          pf.field.cmd("\\leftarrow");
+          return;
+        }
+        if (e.key === ";" || e.key === "\\" || e.key === "|" || e.key === "$" || e.key === "#") {
+          e.preventDefault(); e.stopImmediatePropagation();
+          insertChar({ mathField: pf.field }, e.key);
+          return;
+        }
+        if (e.key === "=") {
+          var topStmts = pf.progLine.statements;
+          var isLastTopLevel = pf.role === "expr" && topStmts.length > 0 &&
+            topStmts[topStmts.length - 1] === pf.stmt;
+          if (isLastTopLevel && !pf.progLine.fnName) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            var capturedLatex = pf.field.latex();
+            pf.field.moveToRightEnd();
+            pf.field.typedText("=");
+            evaluateProgramAndAppend(pf.progLine, pf.field, pf.stmt, capturedLatex);
+          }
+          return;
+        }
+        return;
       }
 
       // --- Matrix-cell keys -------------------------------------------
@@ -3427,6 +4485,24 @@
         }
       }
 
+      // "f(x):={" turns a function-signature-so-far math line into a
+      // program block that's that function's own body (§1/§8 of the
+      // program-blocks spec) — the exact same shape of check as "[" just
+      // above for a named matrix, just matching a full "name(params):="
+      // signature (matchFunctionSignatureSoFar()) instead of a bare
+      // "name:=". Anything else ("{" with no signature typed yet, "{" in
+      // the middle of some other expression, ...) falls through to
+      // MathQuill's own default "{" handling, completely unaffected —
+      // same as "[" above.
+      if (e.key === "{" && hostLine.type === "math") {
+        var sig = matchFunctionSignatureSoFar(hostLine.mathField.latex());
+        if (sig) {
+          e.preventDefault(); e.stopImmediatePropagation();
+          convertMathToProgram(hostLine, sig.name, sig.params);
+          return;
+        }
+      }
+
       // These keys have their own meaning to MathQuill (":" and "=" are
       // unbound, "\" opens its LaTeX-command-name entry mode, ";" would
       // otherwise just type a literal semicolon, "$"/"#" would otherwise
@@ -3455,6 +4531,11 @@
       return lines.map(function (line) {
         if (line.type === "math") return { type: "math", content: line.mathField.latex() };
         if (line.type === "matrix") return { type: "math", content: matrixLatex(line) };
+        // A program block degrades to readable \text{...}-labelled LaTeX
+        // — see programExportLatex()'s own comment for why (no real
+        // LaTeX program-block environment to target, same situation a
+        // graph's own export comment below describes).
+        if (line.type === "program") return { type: "math", content: programExportLatex(line) };
         // A graph has no plotted-image equivalent in the exported LaTeX —
         // that would need an actual plotting package (pgfplots or
         // similar) driven from sampled data, well beyond this app's

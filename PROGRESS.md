@@ -825,6 +825,163 @@ below was verified by building (`bin/build`), running the backend tests
     `d/dx(x^2)=` → `2\cdot x` (phase 1) both still correct, confirming
     this phase never touched the numeric or derivative paths.
 
+- **Program blocks** (`TODO.md`'s last and biggest backlog item — a
+  real programming construct, styled close to math notation) — `{`
+  starts a program block, either bare on its own line or as a
+  function's body (`f(x):={`, mirroring how `[` already starts a named
+  matrix). A program is a flat, keyboard-navigable sequence of
+  statement rows: local assignments (`x\leftarrow expr`, typed via `:`
+  inside a statement field — the program-scoped meaning of the same
+  physical key that means worksheet-level `:=` on an ordinary math
+  line, not a collision, since Mathcad itself genuinely uses a
+  different symbol for the two), at most one `for`/`while` loop, at
+  most one `if`/`otherwise`, and `break`/`continue`/`return` (inserted
+  via `Ctrl+Shift+R`/`W`/`N`/`B`/`T`/`E` — see below for why these
+  letters, none of which are Mathcad conventions). A program evaluates
+  to its last statement's value unless an earlier `return` exits it
+  first (Mathcad's own convention). One level of nesting only (the
+  decided v1 scope): a loop's or `if`'s own body is plain assignment
+  statements, enforced structurally (`insertStructural()` refuses to
+  insert a second top-level loop/`if`, or any structural insert at a
+  nested level at all), not just by convention.
+  - **Reuses existing infrastructure rather than inventing a parallel
+    mechanism**: a program-block function body is registered through
+    the exact same `name(params):=rest` path `collectDefinitions()`
+    already uses for an ordinary function (`funcs[name] = {params,
+    program: line}` instead of `{params, body: latexString}`);
+    `evaluateLatex()`'s function-call site gained exactly one new
+    branch (`fn.program ? runProgram(...) : evaluateLatex(fn.body,
+    ...)`) and is otherwise unchanged. A bare (non-function) program
+    block evaluates in place the same way an ordinary math line does,
+    through the same trigger-detection convention symbolic calculus's
+    `matchDerivativeTrigger`/`matchIntegralTrigger` already
+    established in `evaluateAndAppend()`.
+  - **Comparison operators didn't exist before this** (`evaluateLatex()`
+    was arithmetic-only) — added `<`/`>`/`=`/`\leq`/`\geq`/`\neq` as a
+    new `parseComparisonExpr()` precedence level directly below
+    `evaluateLatex()`'s entry point (binding looser than `+`/`-`,
+    non-chaining, representing true/false as plain `1`/`0` — no new
+    boolean type). Confirmed zero regression risk: no pre-existing
+    line's LaTeX can ever contain a literal `=`/`<`/`>` character,
+    since `insertChar()`'s own `"="` branch always captures a math
+    line's text *before* that keystroke is inserted.
+  - **Local assignment scope**: `runProgram()` copies the caller's
+    `vars` into a fresh local object once, up front; every `←`
+    assignment and `for`-loop binding writes only into that local
+    copy, never the caller's own object — confirmed live that a
+    program parameter/local variable shadows an outer sheet variable
+    of the same name during execution and never leaks back out after.
+  - **Control flow via thrown sentinels** (`{__programSignal:
+    "break"|"continue"|"return", value?}`), caught by the enclosing
+    loop (`break`/`continue`) or the top-level `runProgram()`
+    (`return`) — consistent with how this evaluator already uses
+    throw/catch for its own error propagation. A `break`/`continue`
+    that escapes every enclosing loop (used outside one entirely) is a
+    clear reported error, not a silent no-op or an uncaught exception
+    reaching the UI.
+  - **Infinite-loop safety**: both `for` and `while` are hard-capped at
+    `PROGRAM_MAX_ITERATIONS = 100000`; exceeding it throws a clear
+    error instead of hanging the `WebEngineView` with no way to cancel
+    — Node-tested directly against a `while(1)` that never terminates.
+  - **`for` iterates a range value or a flattened named matrix**
+    (reusing `flattenCollection()`, the same helper `mean`/`median`/
+    `variance`/`stdev` already use) — a bare scalar collection
+    expression is rejected the same way those functions already reject
+    one. Iterating one row/column of a matrix specifically is not
+    supported (no existing representation of "one row of a matrix"
+    anywhere in this file to build on) — a documented v1 limitation,
+    not silently missing.
+  - **Editor model**: a new `"program"` line type, added to every
+    existing `line.type` dispatcher (`focusLine()`, `collectDocument()`/
+    export, `collectDefinitions()`'s registration) rather than any
+    being missed — this project's own hard-won lesson about exactly
+    that failure mode (`.claude/agents/frontend.md`'s lessons). Visual
+    grouping reuses the same CSS-border bracket technique the matrix
+    lines already use (`.matrix-bracket-left`), not a stretched glyph
+    or anything copied from a specific app's UI. Tab/Left/Right walk a
+    freshly-computed flattened reading-order list across the whole
+    nested structure; Enter (via MathQuill's own configurable
+    `handlers.enter`, confirmed NOT reachable through a simulated
+    `.keystroke("Enter")` — see below) adds a sibling statement in
+    whichever list contains the focused field; Backspace on an empty
+    plain statement row removes it, and emptying a bare program's only
+    statement reverts the whole line to pending (mirrors the matrix
+    line's own revert-to-pending behavior).
+  - **Why the block-start/control-flow keys are what they are**:
+    Mathcad has no bare-key convention for inserting a program block or
+    its for/while/if/break/continue/return at all — its real
+    Programming toolbar inserts every one of these by a toolbar click
+    (PTC's own docs, web-searched, not guessed), so none of this app's
+    choices here are a Mathcad convention the way `←`/`∈`/`:=`/`;` are.
+    `{` (proposed in `TODO.md`, confirmed still unclaimed) starts a
+    block. `Ctrl+Shift+R`/`W`/`N`/`B`/`T`/`E` insert
+    for/while/if/break/continue/return — chosen only from letters free
+    of every existing Ctrl/Ctrl+Shift binding (every bare `Ctrl+<letter>`
+    is already claimed by Greek letters or this app's own `s`/`q`/`l`;
+    `Ctrl+Shift+I` is already the integral trigger), so mnemonics are
+    weak for a couple of them (documented inline, not silently picked):
+    R for "for" (a for-loop iterates a Range), W for "while" (exact),
+    N for "if" (I was taken), B for "break" (exact), T for "continue"
+    ("conTinue"), E for "return" ("rEturn"). `for`/`while`/`if`/
+    `otherwise`/`∈` render as static text labels, never typed into
+    MathQuill at all — sidesteps `TODO.md`'s own open question about
+    whether MathQuill's `autoOperatorNames` already covers these
+    keywords, by simply never needing it to.
+  - **A safety fix made during review, not by the implementing
+    session**: the new `Ctrl+Shift+R`/`W`/`N`/`B`/`T`/`E` handler
+    originally only called `preventDefault()`/`stopImmediatePropagation()`
+    when a program field actually resolved from the event target —
+    mirroring the existing (deliberate, documented) Greek-letter/
+    integral-trigger pattern of letting the browser default through
+    otherwise. That's an acceptable tradeoff for those older shortcuts
+    (a missed one opens DevTools or does nothing), but `Ctrl+Shift+R`
+    specifically collides with Chromium's own hard-reload shortcut, and
+    this app has zero save/persistence — letting that through from a
+    stray keystroke while focus was anywhere else (e.g. an ordinary
+    line) would have silently wiped the entire in-progress notebook.
+    Fixed to preventDefault/stopImmediatePropagation unconditionally
+    for all six letters whenever the modifier combo matches, regardless
+    of whether a program field resolves.
+  - **Two real bugs found and fixed live, not caught by the Node-level
+    tests alone**: (1) a program's own trailing/last statement — never
+    forced to be a named assignment, per the "last statement's value"
+    convention — originally threw "malformed assignment" unconditionally;
+    fixed by falling back to evaluating the field as a bare expression
+    when it contains no `\leftarrow` at all. (2) a brand-new `if`
+    originally seeded a starter row only in `thenBody`, leaving
+    `elseBody` permanently empty with no way to ever focus/add a row
+    into it through the UI — fixed to seed both branches.
+  - **A MathQuill finding worth remembering**: `.keystroke("Enter")`
+    does **not** invoke a configured `handlers.enter` callback at all
+    (confirmed even on an already-working ordinary math line, not just
+    a program field) — `.keystroke("Left"/"Right")` do. Testing Enter
+    live requires a real CDP `Input.dispatchKeyEvent` with
+    `type:"keyDown"` (not `"rawKeyDown"`) plus
+    `windowsVirtualKeyCode`/`nativeVirtualKeyCode:13` and
+    `text`/`unmodifiedText:"\r"` — a JS-constructed `KeyboardEvent`
+    can't fake `which`/`keyCode` (getter-only in modern Chromium),
+    which is what this bundled MathQuill build's internal listener
+    actually reads.
+  - Verified with a Node-level test (comparisons, sequential
+    assignment, shadowing/local-scope, a for-loop over a range,
+    while+break, for+continue, early return via `if`, both `if`/
+    `otherwise` branches, break-outside-loop error, the iteration-cap
+    error, program-backed function-call dispatch, the empty-program
+    error, and the bare-trailing-expression fix), and live against the
+    real `src/notebook.html` (headless Chromium over the DevTools
+    Protocol, `claude-in-chrome` wasn't connected in this environment).
+    `bin/build`/`bin/test` clean, 7/7, re-confirmed again after the
+    `Ctrl+Shift+R` safety fix above. Live: built a complete bare
+    program (`s\leftarrow0`, `for i\in r: s\leftarrow s+i`, trailing
+    `s`) through real `{`/Enter/`Ctrl+Shift+R`/`:`/`=` keystrokes →
+    `s=10`; built a complete function-body program (`f(x):={if x>0:
+    y\leftarrow1 otherwise y\leftarrow-1; y}`) the same way →
+    `f(5)=1`, `f(-5)=-1`; Tab navigation across a for-loop's var/
+    collection fields, break/continue/return insertion, and backspace-
+    revert-to-pending on an emptied bare program all confirmed.
+    Regression, same session: `2+3=` → `5`, `d/dx(x)=` and `\int(x)dx=`
+    both still produce a formula result — unaffected.
+
 ## Not done / out of scope (per README's own "Notes" section)
 
 - No i18n (`qsTr`/translation catalogs) — explicitly skipped.
