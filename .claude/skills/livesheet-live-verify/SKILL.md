@@ -1,6 +1,6 @@
 ---
 name: livesheet-live-verify
-description: How to live-verify a change to livesheet's src/notebook.html by actually driving the real MathQuill-based page with synthetic keystrokes and reading back the result, instead of trusting a Node-level copy of the logic alone. Covers the preferred tooling order (claude-in-chrome, then a documented DevTools-Protocol fallback, never wtype against the compiled Qt app) and the specific MathQuill/CDP gotchas that make a live test look like a false app bug if you don't know them. Use this skill whenever testing or verifying ANY change to src/notebook.html — a new keyboard shortcut, a new line type, a new evaluator rule — before claiming a change works, and especially whenever claude-in-chrome reports "Browser extension is not connected."
+description: How to live-verify a change to livesheet's src/notebook.html by actually driving the real MathQuill-based page with synthetic keystrokes and reading back the result, instead of trusting a Node-level copy of the logic alone. Covers the preferred tooling order (claude-in-chrome, then a documented DevTools-Protocol fallback, wtype against the compiled Qt app only for a genuinely native-level question like "does something intercept this key before notebook.html's own JS"), this sandbox's non-obvious hyprctl dispatch syntax and the safe wtype-Alt+Tab focus workaround, and the specific MathQuill/CDP gotchas that make a live test look like a false app bug if you don't know them. Use this skill whenever testing or verifying ANY change to src/notebook.html — a new keyboard shortcut, a new line type, a new evaluator rule — before claiming a change works, and especially whenever claude-in-chrome reports "Browser extension is not connected."
 ---
 
 # Live-verifying livesheet (src/notebook.html)
@@ -48,8 +48,34 @@ bug so far).
    reason to touch the compiled app for a frontend-only change. Reach
    for the compiled app only when the thing under test genuinely needs
    the Qt/QML shell (the export dialog, theme-accent reading, native
-   window chrome) — nothing about an ordinary `notebook.html` change
-   does.
+   window chrome, **or whether something NATIVE — not notebook.html —
+   intercepts a given key before the page's own JS ever sees it**, e.g.
+   confirming `F1` isn't claimed by some Qt/QML shortcut or a
+   Chromium-core accelerator the way `Ctrl+Shift+R`/hard-reload is —
+   this specific question is unanswerable against a plain
+   `notebook.html` copy in a regular browser tab, since that's a
+   different host entirely).
+
+   **If you do reach for it, this environment's `hyprctl dispatch`
+   needs its own non-obvious syntax** — plain classic dispatcher
+   strings (`hyprctl dispatch focuswindow title:livesheet`) fail with a
+   Lua parse error here; this sandbox's Hyprland wraps `dispatch` in a
+   Lua layer. Don't burn time guessing `hl.dsp.*` call forms. Instead:
+   launch the app while the monitor's already-active workspace is the
+   one you want it on (a fresh window with no matching window rule
+   lands there by default, no dispatch needed), then focus it with a
+   **physical** keypress instead of any `hyprctl` focus/workspace
+   dispatch: `wtype -M alt -k Tab -m alt` (Alt+Tab, the native
+   `ALT+TAB` keybind already wired in) — confirm it worked via
+   `hyprctl activewindow -j` before sending anything further. This is
+   also the fix for the focus-stealing incident above: **never trust a
+   dispatch/focus call's own reported success — always confirm via an
+   independent query (`hyprctl activewindow -j`) AND a `grim`
+   screenshot showing the actual expected content landed in the actual
+   livesheet window**, not just that some command returned 0. A
+   screenshot showing the right rendered math is strictly stronger
+   proof than any API return value, and is what actually catches a
+   silent focus-steal if one happens anyway.
 
 ## The DevTools-Protocol fallback (when claude-in-chrome isn't connected)
 
@@ -145,6 +171,22 @@ stderr for `"CONSOLE"` to see what actually happened in-page.
   default list, so "adding" a short string of just the names you think
   are missing would silently drop every other default name (`gcf`,
   `Pr`, `injlim`, ...).
+- **For a feature with no single keybinding that assembles it end to
+  end** (program blocks' statement trees are the clearest example — a
+  real `for`/`while`/`if` body is built from several separate
+  keystrokes: `Ctrl+Shift+R`, typed field content, `Enter` for each
+  sibling statement, ...), building the test tree directly via the
+  app's own internal constructors (`createStatementObject()`,
+  `createProgramField()`, `runStatementList()`, etc. — real globals,
+  per the no-IIFE note above) and then running the REAL interpreter/
+  evaluator/MathQuill fields against it is a legitimate, faster middle
+  ground between a full keystroke-driven UI test and a Node-level
+  logic copy — it still exercises the real interpreter and real
+  MathQuill fields, it just skips reproducing the UI-insertion
+  keybinding sequence itself. Only safe when that keybinding sequence
+  isn't what's actually under test (it wasn't, for testing a `for`
+  loop iterating `row()`/`col()` — the insertion keybindings were
+  unrelated, already-shipped code).
 - **Test a brand-new line's very first keystroke separately from "a
   line that already has one character typed."** A modifier-key
   shortcut (`Ctrl+<letter>`) behaves differently on a genuinely fresh

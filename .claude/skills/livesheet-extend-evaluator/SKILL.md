@@ -61,6 +61,28 @@ have come from.
   you give it — it does not extend the default list, so passing a
   short string of just the names you think are missing would silently
   drop every other default name too.
+- **A typed `_` (subscript) is NOT wrapped in braces for exactly one
+  plain character** (`M_2`, `M_i`), the same "single character skips
+  braces" rule `^` already has (see above) — confirmed as its own,
+  separate empirical fact for `_` rather than assumed by analogy to
+  `^`, since this build's two superficially-similar template
+  mechanisms aren't guaranteed to share every quirk. Anything longer
+  (a multi-digit number, a comma-separated pair, a Greek command, a
+  negative number) IS braced (`M_{23}`, `M_{2,3}`, `M_{\beta}`,
+  `M_{-1}`). An empty subscript renders as `M_{ }` (a literal space
+  inside braces), never a bare dangling `_` — so a parser branching on
+  "bare single char vs. braced group" has no third, brace-less-and-
+  empty case to worry about.
+- **A typed `/` key always produces `\frac{}{}` in this MathQuill
+  build — never `\div`.** `\div` is a separate, real LaTeX token this
+  evaluator's grammar can still parse, but nothing in this app's own
+  keybindings ever types it; it's effectively dead code as far as live
+  user input goes. If you're adding behavior to "the division
+  operator" and you only touch the `\div` call site because that's the
+  one literally named "divide," you've silently missed the actual path
+  real typing takes — trace how a user types an operator (not just
+  what the grammar accepts) before deciding a change to it is
+  complete.
 
 ## Adding a new top-level grammar entry point (e.g. a new precedence level) safely
 
@@ -96,6 +118,23 @@ caught by logic tests that happened to only ever exercise cases with a
 redundant trailing self-assignment. If a construct has a privileged
 "last/special" position, explicitly test the case where that position
 holds the *other*, less-common shape.
+
+## A shared helper's existing behavior may be right for only SOME of its callers
+
+`broadcastUnary()` is called by both unary minus and (indirectly) every
+`sin`/`cos`/`ln`-style built-in — and separately, when it gained a new
+"pass a tagged value's metadata through unchanged" behavior for one new
+caller (physical units' quantity type, letting `-5kg` correctly stay
+`-5kg`), that same behavior was silently WRONG for a different existing
+caller that happened to route through the same function too: un-indexed
+`\sqrt` also used `broadcastUnary()` at the time, and a square root
+needs to actually transform that metadata (halve a quantity's
+dimensions), not pass it through untouched the way negation correctly
+does. Before changing (or extending) a shared helper's behavior for the
+caller you're actively working on, enumerate every OTHER caller of that
+same function and check whether its correctness requirement actually
+matches the one you're adding — don't assume "this is the only place
+that calls it" or "every caller wants the same thing."
 
 ## Testing a new grammar rule against definition-scanning functions
 

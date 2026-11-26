@@ -33,6 +33,20 @@ first, add your case to each one, and test the new type specifically
 at whatever behavior each dispatcher controls (focus, export,
 definition-scanning), not just the one behavior you were building.
 
+**This generalizes beyond `line.type` switches to any per-kind list at
+all.** A math line's MathQuill `edit` handler clears a stale `"="`
+result widget on re-edit — and when physical units added a *new* kind
+of result (`resultQuantityEl`, alongside the existing
+`resultMatrixEl`/`resultFormulaEl`), that cleanup list needed its own
+new case too, or a stale "5 kg" would keep sitting there after the
+expression producing it changed. Nothing here is a `line.type` switch
+at all — it's a different per-kind dispatch list that happens to have
+the exact same failure shape. Whenever you add a new *kind* of
+anything this codebase already distinguishes several kinds of (a
+result-widget type, a statement kind in program blocks, ...), grep for
+every place that already branches on the existing kinds, not just the
+places directly relevant to the feature you're building.
+
 ## 2. The "fresh pending line's first keystroke" timing gap generalizes to ANY new keydown-tracked feature
 
 The global capture-phase keydown listener resolves a keystroke's
