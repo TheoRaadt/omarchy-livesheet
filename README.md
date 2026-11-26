@@ -56,9 +56,8 @@ Inside a math field:
   otherwise: defining your own `e:5` on an earlier line shadows the
   constant for every line after it, the same as any other definition
 - A scalar times a named matrix (`2*A` or `A*2`, either order — see
-  matrices below) multiplies every cell elementwise; every other
-  matrix-involving operation (`+`, `-`, matrix times matrix, division)
-  is still unsupported
+  matrices below) multiplies every cell elementwise; `+`/`-`/matrix
+  times matrix/division between two matrices is still unsupported
 - Common named functions evaluate directly, no definition needed:
   `sin cos tan sec csc cot`, their inverses (`arcsin arccos arctan arcsec
   arccsc arccot`), the hyperbolic versions (`sinh cosh tanh sech csch
@@ -102,6 +101,36 @@ Inside a math field:
 Matrix cells hold plain numbers, variables, or expressions — they don't
 support the `:`, `\`, `|`, or `=` shortcuts the way a regular math line
 does. Exported as a standard `\begin{bmatrix}...\end{bmatrix}`.
+
+`A:[` on a math line showing exactly `A:=` (nothing else typed yet)
+names the matrix that follows, the same way `A:3` becomes `A := 3` —
+a **named matrix** is a real value later lines can use:
+
+- `det(A)` (determinant), `trace(A)` (sum of the diagonal), `A^T`
+  (transpose), and `A^-1` (inverse, Gauss-Jordan elimination) — the
+  last two are typed as an ordinary exponent, Mathcad's own
+  convention, not a function call. All four require a square matrix
+  except transpose
+- `solve(expr, x)` solves a single equation for `x` (Newton's method);
+  `solve(A, b)` solves the linear system `Ax = b` for a named matrix
+  `A` and column vector `b` — which call you get depends on whether
+  the second argument is already a matrix-bound variable
+- `mean(A)`, `median(A)`, `variance(A)` (population, divide-by-`n`),
+  and `stdev(A)` — same four statistics a range variable's own values
+  accept, reading the matrix flattened row-major
+- `A_{i,j}` (typed as a subscript) is the scalar element at row `i`,
+  column `j`, 1-indexed; `A_i` is the `i`-th element when `A` is a
+  single row or column (an error otherwise, telling you to use
+  `A_{i,j}` instead)
+- `row(A, i)` / `col(A, j)` return a new matrix — just that row or
+  column of `A`, 1-indexed — e.g. to sum a matrix's second row via a
+  program block's `for` loop: `for x \in row(A,2)`
+- A result that's itself a matrix (`A^T`, `solve(A,b)`, `row(A,i)`, ...)
+  displays as a real typeset matrix next to the `=`, not a flat list
+
+None of this applies to an unnamed matrix (the original bare `[` on a
+pending line, with no `name:=` in front) — that's still just a typeset
+widget, not a value.
 
 `@` at the start of a line (Mathcad's own bare shortcut for inserting an
 X-Y plot) starts a **graph** instead of a math field:
@@ -163,13 +192,13 @@ expression:
   expr`, Mathcad's own program-scoped assignment symbol — distinct
   from the worksheet-level `:=` everywhere else) rather than defining a
   sheet-wide variable
-- `Ctrl+Shift+R` inserts a **for** loop (iterating a range variable or
-  a named matrix, flattened), `Ctrl+Shift+W` a **while** loop,
-  `Ctrl+Shift+N` an **if/otherwise** conditional, and
-  `Ctrl+Shift+B`/`T`/`E` insert **break**/**continue**/**return** —
-  at most one loop and one `if` per program, and a loop's or `if`'s
-  own body can only hold plain assignment statements (no nesting a
-  loop inside a loop, or an `if` inside a loop, in this version)
+- `Ctrl+Shift+R` inserts a **for** loop (iterating a range variable, a
+  named matrix flattened, or one row/column of a named matrix via
+  `row()`/`col()` — see matrices above), `Ctrl+Shift+W` a **while**
+  loop, `Ctrl+Shift+N` an **if/otherwise** conditional, and
+  `Ctrl+Shift+B`/`T`/`E` insert **break**/**continue**/**return** — any
+  number of loops/`if`s, and any of them can nest inside another's
+  body, to any depth
 - A program evaluates to its **last statement's value**, unless an
   earlier `return` exits it first — e.g. a bare program block with
   `s\leftarrow0`, a `for i` loop adding `i` into `s`, then a trailing
@@ -180,7 +209,11 @@ expression:
 - **Tab**/arrow keys navigate between a program's fields; **Enter**
   adds another statement in the current sequence; **Backspace** on an
   empty statement removes it (emptying a bare program's only statement
-  reverts the line back to pending, same as a 1×1 matrix)
+  reverts the line back to pending, same as a 1×1 matrix). Backspace on
+  an empty `for`/`while`/`if` also removes the whole loop/`if`, but
+  only while it's still untouched since you inserted it — once you've
+  typed anything into it anywhere, Backspace just moves between fields
+  instead, so real work is never silently discarded
 - As a function's body (`f(x):={...`), call it afterward exactly like
   any other function, e.g. `f(5)` followed by `=`
 
