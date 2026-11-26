@@ -1242,3 +1242,55 @@ below was verified by building (`bin/build`), running the backend tests
   `median`/`variance`/`stdev`, which had been shipped and verified in
   this file across earlier sessions but never made it into the
   user-facing feature list.
+- 2026-11-26: **In-app F1 help overlay**, the first in-app help
+  livesheet has ever had — user-requested, with the trigger keys
+  (`F1` open/toggle, `Esc` close) specified by the user up front. A
+  hand-written static cheat sheet (no generation mechanism, matching
+  this project's no-build-step philosophy) covering every section of
+  `README.md`'s feature list as compact key→action tables rather than
+  prose, built entirely in `src/notebook.html` (no QML/backend
+  involvement — confirmed the whole notebook already lives in the
+  WebEngineView). Design highlights: `F1` is checked first in the
+  global keydown listener, unconditionally, before every other
+  branch — so once help is open, its own `Escape` meaning ("close
+  help") always wins over the pre-existing function-name completion
+  dropdown's own `Escape` handler further down the same listener,
+  with no ordering bug to worry about; opening help also proactively
+  dismisses that dropdown if it's showing, so the two overlays never
+  stack. Focus/cursor state is captured before opening and restored
+  exactly on close — a MathQuill-backed field (math/graph/matrix-
+  cell/program) just needs `.focus()` again (MathQuill tracks cursor
+  position internally, independent of DOM blur); a plain
+  pending/heading contenteditable line needed its own saved-character-
+  offset-plus-`TreeWalker` restore, since the DOM has no built-in
+  "focus at character offset N." Colors read `var(--bg)`/`var(--ink)`
+  exactly like every other themed element, confirmed to flip correctly
+  with `Ctrl+L` in both directions. One content inaccuracy introduced
+  by the implementing session's own paraphrase of README's Greek-letter
+  footnote was caught and fixed at review time (it implied
+  `Ctrl+Shift+S`/`Ctrl+Shift+P` were "app shortcuts" — they're actually
+  just deliberately left unmapped, to keep `Σ`/`Π` from silently
+  doubling as plain variable names). Live-verified (claude-in-chrome):
+  F1 opens from every focus state (empty pending line, math field with
+  real cursor position, matrix cell, program field) and Escape restores
+  the exact same field/cursor each time with zero document-state
+  change; F1 toggles both directions; opening help while the
+  completion dropdown is showing cleanly dismisses it; Ctrl+L while
+  help is open updates its colors live; Ctrl+S/Ctrl+Q/Greek-letter/
+  program-block shortcuts all unaffected. `bin/build`/`bin/test`
+  reconfirmed clean (7/7) afterward. Also checked, at review time, that
+  nothing native competes for F1: grepped `src/*.qml`/`src/*.cpp`/
+  `src/*.h` for any existing `F1`/`Qt.Key_F1`/`StandardKey.Help`
+  binding (none exists), and confirmed F1 isn't one of Chromium's own
+  hard-wired keyboard accelerators the way `Ctrl+Shift+R`
+  (hard-reload, this project's own past incident) or `Ctrl+Shift+I`
+  (devtools) are — unlike those two, "Help" in real Chrome is a menu
+  action, not a global accelerator, so there's nothing underneath for
+  the page's own unconditional `preventDefault()` to need to race
+  against. (Attempted to also confirm this by launching the real
+  compiled binary and sending a literal F1 keypress under Hyprland;
+  blocked by this sandbox's non-standard Lua-based `hyprctl dispatch`
+  syntax rejecting both classic and guessed Lua-call forms for
+  workspace-switching/window-focusing, so that specific visual
+  confirmation wasn't completed — the grep + Chromium-accelerator
+  reasoning above was judged sufficient in its place.)

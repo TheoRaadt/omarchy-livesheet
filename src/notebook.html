@@ -285,10 +285,203 @@
     background: var(--ink, #e6e6e6);
     color: var(--bg, #0e0e10);
   }
+  /* F1 help overlay (toggleHelpOverlay()/openHelpOverlay()/closeHelpOverlay()
+     below). A scannable cheat sheet, not README's prose — see the big
+     comment by openHelpOverlay() for the focus-save/restore contract. The
+     panel's own colors read through --bg/--ink exactly like every other
+     themed element on the page (see the html.paper comment above) so it
+     flips correctly with Ctrl+L whether that happens before, during, or
+     after the overlay is open. The dark backdrop scrim behind it is
+     deliberately NOT themed the same way — it's just a universal dimmer,
+     equally appropriate under either look. */
+  .help-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .help-overlay[hidden] { display: none; }
+  .help-panel {
+    position: relative;
+    background: var(--bg, #0e0e10);
+    color: var(--ink, #e6e6e6);
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    width: 90%;
+    max-width: 760px;
+    max-height: 86vh;
+    overflow-y: auto;
+    padding: 20px 32px 28px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    outline: none;
+  }
+  .help-panel h2 {
+    margin: 0 0 2px;
+  }
+  .help-panel .help-hint {
+    opacity: 0.7;
+    font-size: 0.85em;
+    margin: 0 0 1.1em;
+  }
+  .help-panel h3 {
+    margin: 1.3em 0 0.3em;
+    font-size: 1.02em;
+    border-bottom: 1px solid currentColor;
+    padding-bottom: 2px;
+  }
+  .help-panel table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.3em 0 0.9em;
+    font-size: 0.9em;
+  }
+  .help-panel td, .help-panel th {
+    text-align: left;
+    vertical-align: top;
+    padding: 2px 10px 2px 0;
+  }
+  .help-panel p {
+    font-size: 0.9em;
+    margin: 0.4em 0 0.9em;
+  }
+  .help-panel code {
+    font-family: Menlo, Consolas, monospace;
+    background: rgba(128, 128, 128, 0.18);
+    border-radius: 3px;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+  .help-close {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    background: none;
+    border: none;
+    color: var(--ink, #e6e6e6);
+    font-size: 1.4em;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
 </style>
 </head>
 <body>
   <div id="notebook"></div>
+  <!-- F1 help overlay — a compact cheat sheet mirroring README's own
+       Shortcuts/Greek-letter tables, not its prose. Hand-written here
+       (no build step in this project, see CLAUDE.md) and toggled by
+       toggleHelpOverlay()/openHelpOverlay()/closeHelpOverlay() in the
+       script below. Starts hidden; tabindex="-1" makes the panel itself
+       focusable (via openHelpOverlay()'s own .focus() call) without
+       putting it in the normal Tab order. -->
+  <div id="help-overlay" class="help-overlay" hidden>
+    <div id="help-panel" class="help-panel" tabindex="-1">
+      <button id="help-close" class="help-close" type="button" aria-label="Close help">&times;</button>
+      <h2>livesheet — keyboard reference</h2>
+      <p class="help-hint">Esc to close · F1 to toggle</p>
+
+      <h3>Line types (first keystroke on an empty line)</h3>
+      <table>
+        <tr><td><code>#&nbsp;</code></td><td>Title heading</td></tr>
+        <tr><td><code>##&nbsp;</code></td><td>Paragraph heading</td></tr>
+        <tr><td><code>###&nbsp;</code></td><td>Subparagraph heading</td></tr>
+        <tr><td><em>anything else</em></td><td>Live math field</td></tr>
+        <tr><td><code>[</code></td><td>Matrix</td></tr>
+        <tr><td><code>@</code></td><td>X-Y graph (auto-detects a 3D surface)</td></tr>
+        <tr><td><code>{</code></td><td>Program block</td></tr>
+      </table>
+
+      <h3>Math fields</h3>
+      <table>
+        <tr><td><code>:</code></td><td>Define a variable (<code>a:2</code> → <code>a:=2</code>) or a function (<code>f(x):x^2</code>)</td></tr>
+        <tr><td><code>;</code></td><td>Range variable in place of a value (<code>i:0;5</code> → <code>i:=0…5</code>; <code>i:0,2;10</code> steps by 2)</td></tr>
+        <tr><td><code>$</code> / <code>#</code></td><td>Σ / Π over the next term, using whatever range variable it contains</td></tr>
+        <tr><td><code>/</code></td><td>Fraction (Tab/Shift+Tab between numerator and denominator)</td></tr>
+        <tr><td><code>\</code></td><td>Square root</td></tr>
+        <tr><td><code>Shift+\</code> (<code>|</code>)</td><td>Nth root (index, then radicand)</td></tr>
+        <tr><td><code>=</code></td><td>Evaluate the line</td></tr>
+        <tr><td><code>e</code>, <code>Ctrl+P</code> (π)</td><td>Built-in constants — no definition needed</td></tr>
+        <tr><td>Name + <code>(</code></td><td><code>sin cos tan sec csc cot</code>, their <code>arc-</code> inverses, the <code>-h</code> hyperbolic forms and their inverses, plus <code>ln</code>, <code>log</code>, <code>exp</code> — just type the name</td></tr>
+        <tr><td><code>Ctrl+&lt;letter&gt;</code> / <code>Ctrl+Shift+&lt;letter&gt;</code></td><td>Greek letter (lower/upper) — see the table below</td></tr>
+        <tr><td><code>Enter</code></td><td>New line</td></tr>
+        <tr><td><code>Backspace</code></td><td>At the start of an empty line, removes it and returns to the end of the previous one</td></tr>
+      </table>
+
+      <h3>Matrices</h3>
+      <table>
+        <tr><td><code>,</code></td><td>Add a column to the current row</td></tr>
+        <tr><td><code>;</code></td><td>Finish the row, start a new one</td></tr>
+        <tr><td><code>Tab</code> / <code>Shift+Tab</code> / arrows</td><td>Move between cells; step out to the line before/after at the outer edge</td></tr>
+        <tr><td><code>Backspace</code></td><td>Removes an empty trailing cell; empties a 1×1 matrix back to a plain line</td></tr>
+        <tr><td><code>Enter</code></td><td>Finish the matrix, start a new line below it</td></tr>
+        <tr><td><code>A:[</code></td><td>Names the matrix (only right after <code>A:=</code> with nothing else typed) — makes it a real value</td></tr>
+        <tr><td><code>det(A)</code>, <code>trace(A)</code>, <code>A^T</code>, <code>A^-1</code></td><td>Determinant, trace, transpose, inverse (square matrices, except transpose)</td></tr>
+        <tr><td><code>solve(expr,x)</code> / <code>solve(A,b)</code></td><td>Solve one equation for <code>x</code>, or the linear system <code>Ax=b</code></td></tr>
+        <tr><td><code>mean(A) median(A) variance(A) stdev(A)</code></td><td>Statistics over the flattened matrix</td></tr>
+        <tr><td><code>A_{i,j}</code> / <code>A_i</code></td><td>Scalar element at row <code>i</code>, column <code>j</code> (1-indexed); <code>A_i</code> for a single row/column</td></tr>
+        <tr><td><code>row(A,i)</code> / <code>col(A,j)</code></td><td>New matrix: just that row/column of <code>A</code> (1-indexed)</td></tr>
+      </table>
+
+      <h3>Graphs</h3>
+      <table>
+        <tr><td><code>@</code></td><td>Start a graph; type the expression in <code>x</code> (and/or <code>y</code>) after <code>y =</code></td></tr>
+        <tr><td><em>(auto)</em></td><td>Using <code>y</code> as a second free variable switches it live to a <code>z =</code> 3D surface</td></tr>
+      </table>
+
+      <h3>Calculus</h3>
+      <table>
+        <tr><td><code>d/dx(expr)</code> then <code>=</code></td><td>Symbolic derivative as a formula (Leibniz notation, typed via the ordinary fraction shortcut)</td></tr>
+        <tr><td><code>Ctrl+Shift+I</code></td><td>Insert an indefinite-integral template, <code>\int(...)dx</code>; <code>=</code> gives the symbolic antiderivative</td></tr>
+      </table>
+
+      <h3>Program blocks</h3>
+      <table>
+        <tr><td><code>{</code></td><td>Start a program block (or right after <code>f(x):=</code>, as that function's body)</td></tr>
+        <tr><td><code>:</code></td><td>Local assignment inside a statement (<code>x←expr</code>) — distinct from worksheet-level <code>:=</code></td></tr>
+        <tr><td><code>Ctrl+Shift+R</code></td><td>Insert a <code>for</code> loop</td></tr>
+        <tr><td><code>Ctrl+Shift+W</code></td><td>Insert a <code>while</code> loop</td></tr>
+        <tr><td><code>Ctrl+Shift+N</code></td><td>Insert an <code>if</code> / <code>otherwise</code></td></tr>
+        <tr><td><code>Ctrl+Shift+B</code></td><td>Insert <code>break</code></td></tr>
+        <tr><td><code>Ctrl+Shift+T</code></td><td>Insert <code>continue</code></td></tr>
+        <tr><td><code>Ctrl+Shift+E</code></td><td>Insert <code>return</code></td></tr>
+        <tr><td><code>&lt; &gt; = \leq \geq \neq</code></td><td>Comparisons — only inside a <code>for</code>/<code>while</code>/<code>if</code>'s own condition field</td></tr>
+        <tr><td><em>(any of the above)</em></td><td>Any loop/<code>if</code> can nest inside another's body, to any depth</td></tr>
+        <tr><td><code>Enter</code></td><td>Add another statement in the current sequence</td></tr>
+        <tr><td><code>Backspace</code></td><td>Removes an empty statement (or an untouched, just-inserted loop/<code>if</code>)</td></tr>
+      </table>
+
+      <h3>Greek letters — lowercase (<code>Ctrl+&lt;letter&gt;</code>)</h3>
+      <table>
+        <tr><td><code>Ctrl+B</code> β</td><td><code>Ctrl+J</code> ξ</td><td><code>Ctrl+R</code> ρ</td></tr>
+        <tr><td><code>Ctrl+D</code> δ</td><td><code>Ctrl+K</code> κ</td><td><code>Ctrl+T</code> τ</td></tr>
+        <tr><td><code>Ctrl+E</code> ε</td><td><code>Ctrl+M</code> μ</td><td><code>Ctrl+U</code> υ</td></tr>
+        <tr><td><code>Ctrl+F</code> φ</td><td><code>Ctrl+N</code> ν</td><td><code>Ctrl+W</code> χ</td></tr>
+        <tr><td><code>Ctrl+G</code> γ</td><td><code>Ctrl+O</code> ω</td><td><code>Ctrl+Y</code> ψ</td></tr>
+        <tr><td><code>Ctrl+H</code> η</td><td><code>Ctrl+P</code> π</td><td><code>Ctrl+Z</code> ζ</td></tr>
+        <tr><td><code>Ctrl+I</code> ι</td><td></td><td></td></tr>
+      </table>
+
+      <h3>Greek letters — uppercase (<code>Ctrl+Shift+&lt;letter&gt;</code>)</h3>
+      <table>
+        <tr><td><code>Ctrl+Shift+G</code> Γ</td><td><code>Ctrl+Shift+J</code> Ξ</td><td><code>Ctrl+Shift+F</code> Φ</td></tr>
+        <tr><td><code>Ctrl+Shift+D</code> Δ</td><td><code>Ctrl+Shift+U</code> Υ</td><td><code>Ctrl+Shift+Y</code> Ψ</td></tr>
+        <tr><td><code>Ctrl+Shift+Q</code> Θ</td><td><code>Ctrl+Shift+L</code> Λ</td><td><code>Ctrl+Shift+O</code> Ω</td></tr>
+      </table>
+      <p>(<code>a c v x</code> stay copy/paste/cut/select-all; plain <code>s q l</code> stay the app shortcuts below, so none of those six get a Greek mapping — and <code>Ctrl+Shift+S</code>/<code>Ctrl+Shift+P</code> are deliberately left unmapped too, even though plain <code>s</code>/<code>q</code>/<code>l</code> are only reserved unshifted, since <code>Σ</code>/<code>Π</code> already mean summation/product above and letting them double as variable names could silently misevaluate instead of failing loudly.)</p>
+
+      <h3>App</h3>
+      <table>
+        <tr><td><code>Ctrl+S</code></td><td>Export</td></tr>
+        <tr><td><code>Ctrl+Q</code></td><td>Quit</td></tr>
+        <tr><td><code>Ctrl+L</code></td><td>Toggle paper/dark look (session-only)</td></tr>
+        <tr><td><code>F1</code></td><td>Toggle this help overlay</td></tr>
+        <tr><td><code>Esc</code></td><td>Close this help overlay</td></tr>
+      </table>
+    </div>
+  </div>
   <script>
     // The notebook is an ordered array of "line" objects, each one of:
     //   - "pending": a plain contenteditable div that hasn't decided what
@@ -4095,6 +4288,116 @@
       document.documentElement.classList.toggle("paper");
     }
 
+    // --- F1 help overlay ----------------------------------------------
+    // Toggled by the global keydown listener's own F1/Escape check (see
+    // its comment — that check runs first in the listener, ahead of
+    // everything else, so Escape closing help always wins over the
+    // completion dropdown's own Escape handling further down). Opening/
+    // closing must never move the cursor or alter any line/document
+    // state, so whatever was focused beforehand (a math/graph/matrix-
+    // cell/program field, a plain pending/heading line, or nothing at
+    // all) is captured on open and restored on close — see
+    // captureFocusState()/restoreFocusState() just below.
+    var helpOverlayOpen = false;
+    var helpOverlayReturnFocus = null;
+
+    // Records enough about the currently-focused element to put the
+    // cursor back exactly where it was, for either of the two shapes a
+    // focused element can have in this app:
+    //   - A MathQuill-backed field (math line, graph expression, matrix
+    //     cell, or program field) — resolveMathField() already unifies
+    //     all four into "the MathQuill field object", and simply calling
+    //     .focus() on that same object later restores its cursor to
+    //     wherever it was: MathQuill tracks cursor position internally
+    //     and independently of DOM focus, blur only hides it visually.
+    //   - A plain contenteditable line (pending or a heading) — MathQuill
+    //     isn't involved at all here, so the exact caret offset (as a
+    //     plain character count from the start of the element's text) is
+    //     saved and walked back to via a Range on close.
+    // Returns null for "nothing meaningfully focused" (e.g. document.body),
+    // which simply means closeHelpOverlay() won't try to refocus anything.
+    function captureFocusState() {
+      var active = document.activeElement;
+      if (!active) return null;
+      var field = resolveMathField(active);
+      if (field) return { kind: "mathfield", field: field };
+      if (active.isContentEditable) {
+        var offset = 0;
+        var sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          var r = sel.getRangeAt(0);
+          var pre = document.createRange();
+          pre.selectNodeContents(active);
+          pre.setEnd(r.endContainer, r.endOffset);
+          offset = pre.toString().length;
+        }
+        return { kind: "contenteditable", el: active, offset: offset };
+      }
+      return null;
+    }
+
+    function restoreFocusState(state) {
+      if (!state) return;
+      if (state.kind === "mathfield") { state.field.focus(); return; }
+      // Walk the saved element's text nodes to find which one holds the
+      // saved character offset, then collapse a Range there — the DOM
+      // has no built-in "focus at character offset N" op, the same
+      // reason placeCaretAtEnd() above has to do this by hand too.
+      state.el.focus();
+      var walker = document.createTreeWalker(state.el, NodeFilter.SHOW_TEXT);
+      var remaining = state.offset, targetNode = state.el, targetOffset = 0, textNode;
+      while ((textNode = walker.nextNode())) {
+        targetNode = textNode;
+        if (remaining <= textNode.length) { targetOffset = remaining; break; }
+        remaining -= textNode.length;
+        targetOffset = textNode.length;
+      }
+      try {
+        var range = document.createRange();
+        range.setStart(targetNode, targetOffset);
+        range.collapse(true);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) { /* best-effort — worst case the element is still focused */ }
+    }
+
+    function openHelpOverlay() {
+      if (helpOverlayOpen) return;
+      // Dismiss the completion dropdown first so it's never left visibly
+      // stacked under/behind the help panel (see TODO/comment by
+      // resetCompletion() above).
+      resetCompletion();
+      helpOverlayReturnFocus = captureFocusState();
+      helpOverlayOpen = true;
+      var overlay = document.getElementById("help-overlay");
+      overlay.hidden = false;
+      // Focusing the panel blurs whatever was focused before, so no stray
+      // keystroke while help is open can reach — and silently edit — the
+      // line that was being worked on.
+      document.getElementById("help-panel").focus();
+    }
+
+    function closeHelpOverlay() {
+      if (!helpOverlayOpen) return;
+      helpOverlayOpen = false;
+      document.getElementById("help-overlay").hidden = true;
+      restoreFocusState(helpOverlayReturnFocus);
+      helpOverlayReturnFocus = null;
+    }
+
+    function toggleHelpOverlay() {
+      if (helpOverlayOpen) closeHelpOverlay(); else openHelpOverlay();
+    }
+
+    document.getElementById("help-close").addEventListener("click", closeHelpOverlay);
+    // Clicking the dimmed backdrop (not the panel itself) also closes it —
+    // e.target is the backdrop only when the click didn't hit (and bubble
+    // up through) anything inside .help-panel.
+    document.getElementById("help-overlay").addEventListener("click", function (e) {
+      if (e.target.id === "help-overlay") closeHelpOverlay();
+    });
+
     // Resolves "the MathQuill field the Greek-letter shortcut below should
     // insert into" from a raw keydown event's target — the same matrix-
     // cell-vs-line resolution the rest of this listener already does
@@ -4318,6 +4621,35 @@
     // handling does, which is what lets it override MathQuill's defaults
     // for keys like ":" and "\" instead of just supplementing them.
     document.addEventListener("keydown", function (e) {
+      // --- F1 help overlay: highest priority in this whole listener ----
+      // Checked before every other branch below (including the "mod"
+      // Ctrl+S/Ctrl+Q/Ctrl+L block right after this one) so that once
+      // help is open, its own Escape meaning ("close help") always wins
+      // over the completion dropdown's own Escape handling further down
+      // in this same listener — there's no ordering bug to worry about
+      // since this runs unconditionally first. F1 claims the key
+      // unconditionally the moment it matches, regardless of what's
+      // focused (an empty pending line, a math/matrix/program field, or
+      // nothing at all) — not gated on resolveMathField()/
+      // resolveProgramField() resolving a target the way per-field
+      // shortcuts (Greek letters, the integral trigger) deliberately are;
+      // F1's own default behavior inside this embedded QtWebEngineView
+      // isn't something to assume is harmless, so it's claimed outright
+      // rather than gated on a resolution step first succeeding (same
+      // reasoning as the program-block Ctrl+Shift+R/W/N/B/T/E block
+      // below, which had to learn this lesson the hard way — see
+      // .claude/agents/frontend.md's lessons-learned).
+      if (e.key === "F1") {
+        e.preventDefault(); e.stopImmediatePropagation();
+        toggleHelpOverlay();
+        return;
+      }
+      if (helpOverlayOpen && e.key === "Escape") {
+        e.preventDefault(); e.stopImmediatePropagation();
+        closeHelpOverlay();
+        return;
+      }
+
       var mod = e.ctrlKey || e.metaKey;
       if (mod && !e.shiftKey && !e.altKey) {
         if (e.key === "s" || e.key === "S") {
