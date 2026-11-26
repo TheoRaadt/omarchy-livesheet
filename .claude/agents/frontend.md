@@ -614,3 +614,55 @@ the ones below already were.
   specific assertions had already passed — a reminder to extract from
   a function's own first real dependency, not from "where the feature
   I'm adding starts."
+- **2026-11-26** — Built the units/quantity feature's Phase 1 (core
+  `{__quantity}` type threaded through `+`/`-`/`*`/`/`/`^`/comparisons,
+  a small proof-of-concept unit set). The manager's spec enumerated
+  exact call sites needing a new `opName` passed to `broadcast()`
+  (parseExpr's `+`/`-`, parseTerm's `\div`, parsePow's `^`, `\sqrt`'s
+  explicit-index form) — but NOT `\frac`, even though a typed `/` key
+  always produces `\frac{}{}` in this MathQuill build, never the
+  separate (effectively unreachable via any keybinding) `\div` token.
+  Skipping `\frac` would have silently broken every required
+  verification case that divides two quantities, since MathQuill never
+  emits `\div` for ordinary typed division at all — confirmed by
+  tracing "how does a user actually type division" before writing any
+  test, not discovered by a failing test. Lesson: when a spec gives an
+  explicit, seemingly-exhaustive list of grammar call sites to touch,
+  still trace each operator back to what a user's actual keystroke
+  produces in THIS MathQuill build before trusting the list is complete
+  — an enumerated list can still miss the one path real typing actually
+  takes.
+- **2026-11-26** — Same units feature: un-indexed `\sqrt` (no explicit
+  root index) was ALSO left out of that same enumerated call-site list,
+  and here it's a genuine spec gap, not a verification-breaking one —
+  no required test exercises a bare `\sqrt{quantity}`. It used
+  `broadcastUnary()`, which passes a quantity's `dims` through
+  UNCHANGED (correct for unary minus, that function's other caller) —
+  so `\sqrt{m^2}` would've silently rendered as `m^2` instead of `m`.
+  Fixed by routing the un-indexed case through the same
+  `broadcast(radicand, 0.5, ..., "^")` path the explicit-index case
+  needed anyway (mathematically `\sqrt{x}` IS `x^{1/2}`), which for
+  free also makes `\sqrt{m}` throw "fractional unit exponent not
+  supported" instead of computing a nonsensical half-integer dims
+  component. General lesson: when a function is shared by multiple call
+  sites with genuinely different correctness requirements
+  (`broadcastUnary()`'s dims-pass-through is right for unary minus,
+  wrong for a root), don't assume adding a guard/dims-awareness to ONE
+  caller's immediate neighbor is enough — check every OTHER caller of
+  the same shared function for whether its correctness requirement
+  actually matches.
+- **2026-11-26** — Same units feature: `convertToMath()`'s MathQuill
+  `edit` handler already cleared a stale `resultMatrixEl`/
+  `resultFormulaEl` sibling DOM widget on re-edit (so a "=" result
+  disappears correctly when you backspace into the expression that
+  produced it) — but had no equivalent line for the brand-new
+  `resultQuantityEl` this feature added, so a stale "5 kg" would have
+  kept sitting there after editing the expression. Caught by reading
+  the surrounding `edit:` handler code before wiring up
+  `appendQuantityResult()` (per this file's own "every line-type/result-
+  kind dispatcher needs an explicit case for every kind" lesson,
+  applied here to a DOM-cleanup site rather than a `line.type` switch),
+  not by live-testing the edit-then-stale-widget sequence — worth
+  remembering this same "every dispatcher-like site needs a case for
+  the new thing" pattern generalizes beyond `line.type` switches to any
+  per-result-kind cleanup list too.

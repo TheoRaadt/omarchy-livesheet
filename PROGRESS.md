@@ -1302,3 +1302,110 @@ below was verified by building (`bin/build`), running the backend tests
     correctly flipped its colors live (confirmed via a second
     screenshot, light → dark). No native interception of F1 by Qt/
     Chromium observed, confirming the static analysis above.
+- **Physical units, Phase 1 of 2** — a new `{__quantity: true, value,
+  dims, displayUnit}` tagged value type (the matrix-tagged-value
+  convention, `{__matrix:true,...}`, applied to a second shape), fully
+  wired through every arithmetic operator, with a small, deliberately
+  bounded proof-of-concept unit set: `m`/`s`/`A`/`K`/`N` (single-letter,
+  seeded into `freshBuiltinVars()` and shadowable exactly like `e`/`π`
+  already are) and `kg`/`mol`/`cd`/`Pa`/`Hz` (multi-letter, permanently
+  reserved — `matchIdentifierAt()`'s single-token grammar means a user
+  could never define a 2+-letter name like `kg` to shadow it in the
+  first place). `dims` is a 7-key SI base-dimension vector (length,
+  mass, time, current, temperature, amount, luminosity); `value` is
+  always canonical SI regardless of what was typed. The architecture
+  (not just the unit list) is Phase 1's actual deliverable — Phase 2
+  (a separate, later task) only needs to add more `UNIT_TABLE` entries
+  and named-derived-unit entries, not touch any arithmetic logic.
+  - **The blast-radius-containing design decision**: any quantity whose
+    `dims` end up all zero (e.g. two matching units cancelling via
+    division) collapses back to a plain JS number immediately
+    (`collapseIfDimensionless()`) — never a dimensionless `{__quantity}`
+    wrapper. This is what makes "divide by a unit to convert and get a
+    plain number" (`(5·kg)/kg` → `5`) flow unchanged into every
+    existing feature (comparisons, program-block variables, ranges,
+    display) with zero further special-casing, and it's also the
+    invariant every other quantity check in the file relies on: a
+    `{__quantity}` that ever survives anywhere always has at least one
+    nonzero dims component, so "is this a quantity at all" already
+    means "...with real units," with no separate zero-check needed.
+  - **Operator-by-operator propagation**, added via an explicit
+    `opName` now threaded through every `broadcast()` call site (most
+    of which — `+`/`-`/`\div`/`\frac`/`^`/`\sqrt` — passed none before
+    this): `+`/`-` require matching `dims` (a plain number mixed with a
+    real quantity is a clear error), result keeps the dims and the
+    LEFT operand's `displayUnit`. `*`/`/` combine `dims` component-wise
+    (sum/difference), look up the result against a small named-
+    derived-unit table (N/Pa/Hz for Phase 1) for a nicer display name,
+    and fall back to an auto-generated compound label (`dimsLabel()`,
+    e.g. `"m/s"`) when nothing matches. `^` requires a plain
+    (dimensionless) exponent and multiplies `dims` by it, rejecting a
+    non-integer result (e.g. `m^0.3`) with a clear "fractional unit
+    exponent" error rather than a nonsensical unit — `\sqrt`'s radicand
+    (both the explicit-index and un-indexed forms) routes through this
+    same `^` machinery as exponent `1/n`, rather than the
+    dims-preserving `broadcastUnary()` unary-minus uses, so
+    `\sqrt{m^2}` correctly simplifies to `m` and `\sqrt{m}` correctly
+    errors. Comparisons (`<`/`>`/`=`/...) reuse the same dims-matching
+    rule via a deliberate signal: `parseComparisonExpr()` is now the
+    ONE place in the whole grammar that calls `broadcast()` with no
+    `opName` at all, which `quantityBroadcast()` reads specifically as
+    "this is a comparison, not arithmetic" (safe precisely because
+    every other call site now explicitly passes one). `sin`/`cos`/`ln`/
+    every other transcendental function rejects a dimensioned argument
+    via one guard in `callBuiltin()` (the single choke point all of
+    them share), not inside `broadcastUnary()` itself — unary minus is
+    `broadcastUnary()`'s other caller and legitimately must allow a
+    dimensioned quantity through unchanged.
+  - **Three places the implementing session found the spec itself
+    needed adjusting** (recorded in `.claude/agent-memory/frontend/
+    units-phase1-quantity-type.md` and `.claude/agents/frontend.md`'s
+    lessons): (1) a typed `/` key always produces `\frac{}{}` in this
+    MathQuill build, never the separate `\div` token the original
+    call-site list named — `\frac` needed the `"/"` opName too, or
+    every division-of-quantities case would have silently used plain
+    object division instead; found by tracing how `/` is actually
+    typed, before writing any live test. (2) un-indexed `\sqrt` (no
+    explicit root) was left off the original call-site list entirely —
+    a genuine gap, not just an open judgment call — since it used to
+    route through `broadcastUnary()`, which passes `dims` through
+    unchanged (correct for negation, silently wrong for a root); fixed
+    by routing it through the same `"^"`-tagged `broadcast()` path as
+    the explicit-index form. (3) the math-field `edit` handler already
+    cleared a stale matrix/formula result widget on re-edit but had no
+    equivalent for the new quantity-result widget — added the matching
+    cleanup line.
+  - **Explicit v1 exclusions** (clear thrown errors, not silent
+    misbehavior): a quantity inside a matrix cell; a quantity as a
+    range bound (`i:=0kg;5kg` — an explicit named error, not just the
+    pre-existing generic `isFinite` fallback, which already caught it
+    but with a confusing message); mixing a matrix and a quantity in
+    one operation. `for x in <bare quantity>` (not a range/matrix)
+    already failed cleanly via the pre-existing `flattenCollection()`
+    error with zero new code, confirmed rather than assumed. No
+    Celsius/Fahrenheit or other additive-offset units (Kelvin only,
+    purely multiplicative unit scaling) — not relevant to Phase 1's
+    list, just noting the constraint for Phase 2.
+  - Verified independently by the manager, not just trusting the
+    delegated report: `node --check` clean on the extracted script,
+    `bin/build`/`bin/test` clean (7/7), and — directly against the
+    real compiled `build/livesheet` binary (`wtype` keystrokes, `grim`
+    screenshots) — `3m+2m=` → `5 m`, and `5kg+3m=` → left exactly as
+    typed with no result appended (the mismatched-units error). The
+    implementing session's own live verification (`claude-in-chrome`,
+    driving real `insertChar`/MathQuill fields, not a reimplementation)
+    additionally confirmed: `2kg*9.8(m/s^2)=` → `19.6 N` (named-unit
+    lookup after multiplication, not just a literally-seeded unit);
+    `10m/2s=` → `5 m/s` (compound-label fallback); unit-cancelling
+    division collapsing to a plain number with no wrapper at all;
+    `sin(3m)=` erroring while `sin(3)=` still works; `-5kg=` → `-5 kg`;
+    `m:=7` shadowing the meter unit for every later line (`m+1=` → `8`,
+    not treated as a quantity); dims-matching and mismatched-dims
+    comparisons inside a program-block condition; the range-bound and
+    matrix-cell rejections; and a full regression pass (`e`/`π`, Greek
+    letters, `det`/`trace`/`^T`/`^-1` on a real matrix, `mean`/`median`/
+    `variance`/`stdev`, plain ranges, program blocks) all unaffected.
+    No console errors throughout. 55 Node-level assertions also passed
+    (dims helpers, every operator's dims math, named-unit lookup,
+    collapse behavior, and the same regressions) — see the memory file
+    above for the full list.

@@ -198,6 +198,23 @@
     vertical-align: middle;
     margin-left: 8px;
   }
+  /* A quantity-VALUED "=" result (see appendQuantityResult()) — the
+     number next to its unit label, inline next to the field, same
+     placement convention as .result-matrix/.result-formula above. The
+     unit label is set apart slightly (reduced opacity, upright/non-
+     italic, a small gap from the number) rather than looking like part
+     of the number itself. */
+  .result-quantity {
+    display: inline-flex;
+    align-items: baseline;
+    vertical-align: middle;
+    margin-left: 8px;
+    gap: 0.3em;
+  }
+  .result-quantity-unit {
+    font-style: normal;
+    opacity: 0.75;
+  }
   /* A graph line is the "y =" expression field stacked above its plot —
      see convertToGraph()/renderGraph(). Monochrome by design, the same
      as everything else on the page: the curve and axes are drawn in
@@ -667,6 +684,14 @@
       // branches below, so every other operator falls straight through
       // to the throw exactly as before.
       if (isMatrixValue(a) || isMatrixValue(b)) {
+        // A quantity (see makeQuantity()/isQuantityValue() above) mixed
+        // into a matrix operation is explicitly rejected, not attempted
+        // — matrix arithmetic here never got a dims-aware rewrite, and
+        // "a matrix of quantities" is out of scope for this feature (see
+        // its own design note on matrix cells never holding a quantity).
+        if (isQuantityValue(a) || isQuantityValue(b)) {
+          throw new Error("matrix arithmetic with a unit-bearing quantity is not supported");
+        }
         if (opName === "*") {
           var matrix = isMatrixValue(a) ? a : b;
           var scalar = isMatrixValue(a) ? b : a;
@@ -678,6 +703,14 @@
         }
         throw new Error("matrix arithmetic (other than ^T, ^-1, det, trace) is not supported");
       }
+      // A quantity operand (either side) routes through quantityBroadcast()
+      // (defined near the unit database, further below — fine despite the
+      // textual order, since it's a hoisted function declaration) instead
+      // of the plain-number/range handling below, which stays completely
+      // unaffected for every call that never involves a quantity at all.
+      if (isQuantityValue(a) || isQuantityValue(b)) {
+        return quantityBroadcast(a, b, op, opName);
+      }
       if (Array.isArray(a) && Array.isArray(b)) {
         if (a.length !== b.length) throw new Error("range length mismatch");
         return a.map(function (av, i) { return op(av, b[i]); });
@@ -688,6 +721,12 @@
     }
     function broadcastUnary(a, op) {
       if (isMatrixValue(a)) throw new Error("this operator does not support a matrix operand");
+      // A quantity's dims/displayUnit pass through unchanged — only its
+      // numeric value is transformed. Correct for this function's actual
+      // callers: unary minus (dims never change sign-flipping a value),
+      // and callBuiltin() (guarded there to never hand this a dimensioned
+      // quantity in the first place — see its own comment).
+      if (isQuantityValue(a)) return makeQuantity(op(a.value), a.dims, a.displayUnit);
       return Array.isArray(a) ? a.map(op) : op(a);
     }
 
@@ -702,6 +741,53 @@
     // only supports the specific operations below, not elementwise +-*/).
     function makeMatrix(rows) { return { __matrix: true, rows: rows }; }
     function isMatrixValue(v) { return v !== null && typeof v === "object" && v.__matrix === true; }
+
+    // Physical units (TODO.md's units item, Phase 1 — core quantity type
+    // plus a small proof-of-concept unit set; Phase 2 expands the unit
+    // database once this core is reviewed). A quantity value is a tagged
+    // object — { __quantity: true, value, dims, displayUnit } — exactly
+    // the same convention isMatrixValue() above already establishes for
+    // a matrix, so broadcast()/broadcastUnary() can test for it the same
+    // way. `value` is always the canonical SI (base-unit) numeric value,
+    // regardless of what unit was typed — a seeded unit's own value is
+    // the SI-value-of-one-unit-of-itself (1 for every Phase-1 unit; a
+    // future Phase-2 "ft" would seed 0.3048). `dims` is a plain 7-key
+    // object (see DIM_KEYS/makeDims below), always fully populated, never
+    // sparse. `displayUnit` names which unit symbol to render the value
+    // with, or null to auto-derive a label from `dims` at display time
+    // (see appendQuantityResult() / dimsLabel() further below).
+    var DIM_KEYS = ["length", "mass", "time", "current", "temperature", "amount", "luminosity"];
+    function makeDims(partial) {
+      var d = { length: 0, mass: 0, time: 0, current: 0, temperature: 0, amount: 0, luminosity: 0 };
+      if (partial) for (var k in partial) d[k] = partial[k];
+      return d;
+    }
+    function makeQuantity(value, dims, displayUnit) {
+      return { __quantity: true, value: value, dims: dims, displayUnit: displayUnit || null };
+    }
+    function isQuantityValue(v) { return v !== null && typeof v === "object" && v.__quantity === true; }
+    function dimsEqual(d1, d2) {
+      for (var i = 0; i < DIM_KEYS.length; i++) if (d1[DIM_KEYS[i]] !== d2[DIM_KEYS[i]]) return false;
+      return true;
+    }
+    // The critical blast-radius-containing rule: any quantity whose dims
+    // end up ALL zero (e.g. (5*kg)/kg, a unit cancelling itself out via
+    // division) collapses back to a plain, ordinary JS number immediately
+    // — never a dimensionless {__quantity} wrapper. This is what lets a
+    // "unit conversion by division" result flow unchanged into every
+    // existing feature (comparisons, program-block variables, display)
+    // with zero further changes, and it's also the invariant every
+    // quantity-aware check below actually relies on: a {__quantity}
+    // object that ever reaches any of this file's other code always has
+    // AT LEAST ONE nonzero dims component — it can never be sitting there
+    // dimensionless — so a check like "is this operand a quantity at all"
+    // is already equivalent to "is this operand a quantity with real
+    // units", with no separate all-zero check needed on top.
+    function collapseIfDimensionless(q) {
+      if (!isQuantityValue(q)) return q;
+      for (var i = 0; i < DIM_KEYS.length; i++) if (q.dims[DIM_KEYS[i]] !== 0) return q;
+      return q.value;
+    }
     // Mathcad's Σ/Π operators (bare "$"/"#", summing/multiplying an
     // expression over whatever range variable it contains) are the mirror
     // image of broadcast(): where broadcast() turns a scalar operator into
@@ -858,6 +944,167 @@
       return null;
     }
 
+    // Units database (TODO.md's units item, Phase 1's small, bounded
+    // proof-of-concept set — do not add to this list here; Phase 2 is a
+    // separate, later task once this core is reviewed). Two different
+    // mechanisms, driven by a hard constraint already true of this
+    // grammar: matchIdentifierAt() only ever matches a single Latin
+    // letter or a single Greek command token, never a multi-character
+    // name, so a 2+ letter unit symbol (kg, mol, cd, Pa, Hz) could never
+    // be typed as a shadowable "name:=..." definition to begin with (the
+    // LHS parser would only ever capture its first letter) — those are
+    // permanently-reserved literal-substring matches in parseAtom
+    // instead, below. A single-letter unit (m, s, A, K, N), by contrast,
+    // IS shadowable exactly like "e"/"pi" already are: seeded into
+    // freshBuiltinVars() below, so a later "m:=7" on an earlier line
+    // overrides it for every line after, via the exact same plain
+    // object-key overwrite collectDefinitions() already does for "e:=5".
+    //
+    // `seed` is the canonical-SI value of exactly one of that unit (see
+    // makeQuantity()'s own comment) — every Phase-1 unit's seed is 1
+    // (kg IS the SI mass base; m/s/A/K/mol/cd are literal SI bases; N/Pa/
+    // Hz are named derived units whose own "one of me" is exactly one SI
+    // newton/pascal/hertz). A future Phase-2 unit like "ft" would seed
+    // 0.3048 — this table's shape already supports that, nothing here is
+    // Phase-1-specific beyond the actual entries listed.
+    var UNIT_TABLE = [
+      { symbol: "m", dims: makeDims({ length: 1 }), seed: 1, singleLetter: true },
+      { symbol: "s", dims: makeDims({ time: 1 }), seed: 1, singleLetter: true },
+      { symbol: "A", dims: makeDims({ current: 1 }), seed: 1, singleLetter: true },
+      { symbol: "K", dims: makeDims({ temperature: 1 }), seed: 1, singleLetter: true },
+      // N: a NAMED DERIVED unit, included specifically to prove the
+      // named-unit display table below isn't hardcoded to one entry.
+      { symbol: "N", dims: makeDims({ mass: 1, length: 1, time: -2 }), seed: 1, singleLetter: true },
+      // Multi-letter units — matched as an explicit ORDERED list in
+      // parseAtom below (longer symbols before any shorter one that
+      // could be a prefix of it) so Phase 2's additions — some of which
+      // will share prefixes — don't have to restructure this. None of
+      // Phase 1's five collide with each other, but the ordering is kept
+      // explicit on purpose.
+      { symbol: "kg", dims: makeDims({ mass: 1 }), seed: 1, singleLetter: false },
+      { symbol: "mol", dims: makeDims({ amount: 1 }), seed: 1, singleLetter: false },
+      { symbol: "cd", dims: makeDims({ luminosity: 1 }), seed: 1, singleLetter: false },
+      { symbol: "Pa", dims: makeDims({ mass: 1, length: -1, time: -2 }), seed: 1, singleLetter: false },
+      { symbol: "Hz", dims: makeDims({ time: -1 }), seed: 1, singleLetter: false }
+    ];
+    // symbol -> seed value, for appendQuantityResult()'s "displayUnit
+    // names a real unit" branch (divide the canonical SI value back down
+    // to a count of that unit).
+    var UNIT_SEED_VALUES = {};
+    UNIT_TABLE.forEach(function (u) { UNIT_SEED_VALUES[u.symbol] = u.seed; });
+    // The multi-letter subset, in the table's own explicit order — see
+    // parseAtom's own literal-substring check below for how these are
+    // actually recognized while parsing (no shadowing, no paren-gate;
+    // unlike trace/solve/mean/etc., a unit is never a function call).
+    var MULTI_LETTER_UNITS = UNIT_TABLE.filter(function (u) { return !u.singleLetter; });
+    // Named DERIVED units only (N, Pa, Hz — not every base unit) — used
+    // by quantityBroadcast()'s */÷ result and appendQuantityResult()'s
+    // display fallback: an exact dims match here gives a real unit name
+    // (e.g. "19.6 N") instead of an auto-generated compound label (e.g.
+    // "kg·m/s^2") for a result that happens to land on one of these.
+    var NAMED_DERIVED_SYMBOLS = ["N", "Pa", "Hz"];
+    var NAMED_DERIVED_UNITS = UNIT_TABLE.filter(function (u) {
+      return NAMED_DERIVED_SYMBOLS.indexOf(u.symbol) !== -1;
+    });
+    function findNamedUnitForDims(dims) {
+      for (var i = 0; i < NAMED_DERIVED_UNITS.length; i++) {
+        if (dimsEqual(NAMED_DERIVED_UNITS[i].dims, dims)) return NAMED_DERIVED_UNITS[i].symbol;
+      }
+      return null;
+    }
+    // The base-unit symbol each dims component auto-generates a compound
+    // label with when nothing (neither a surviving displayUnit nor an
+    // exact NAMED_DERIVED_UNITS match) names the result — see
+    // appendQuantityResult() below. Note "mass" maps to "kg" (the true SI
+    // mass base, per the unit database above), not a single-letter "g".
+    var BASE_UNIT_SYMBOLS = {
+      length: "m", mass: "kg", time: "s", current: "A",
+      temperature: "K", amount: "mol", luminosity: "cd"
+    };
+    // Builds a compound label straight from `dims` — e.g. {length:1,
+    // time:-1} -> "m/s", {length:2} -> "m^2" — for a result whose dims
+    // don't exactly match any named unit. Positive-power components join
+    // a numerator with "·"; negative-power ones (shown with their
+    // positive exponent) follow a "/"; an exponent of exactly 1 is shown
+    // bare, with no "^1".
+    function dimsLabel(dims) {
+      var numer = [], denom = [];
+      DIM_KEYS.forEach(function (k) {
+        var p = dims[k];
+        if (!p) return;
+        var sym = BASE_UNIT_SYMBOLS[k];
+        if (p > 0) numer.push(p === 1 ? sym : sym + "^" + p);
+        else denom.push(-p === 1 ? sym : sym + "^" + (-p));
+      });
+      var numStr = numer.length ? numer.join("·") : "1";
+      return denom.length ? numStr + "/" + denom.join("·") : numStr;
+    }
+    // Componentwise dims combination for */÷ below: sign=1 is */'s "sum
+    // each side's dims", sign=-1 is ÷'s "subtract the right side's dims".
+    function combineDims(d1, d2, sign) {
+      var out = {};
+      DIM_KEYS.forEach(function (k) { out[k] = d1[k] + sign * d2[k]; });
+      return out;
+    }
+    // The actual quantity-aware arithmetic broadcast() (far above) hands
+    // off to whenever either operand is a quantity. Every call site that
+    // reaches evaluateLatex()'s broadcast() now passes an explicit
+    // opName ("+", "-", "*", "/", "^") EXCEPT parseComparisonExpr()'s —
+    // which deliberately passes none, read below as "this is a
+    // comparison" (see that function's own comment for why that's a
+    // safe, unambiguous signal). Relies throughout on the invariant
+    // collapseIfDimensionless() establishes: a {__quantity} value that
+    // ever reaches this function always has at least one nonzero dims
+    // component, so "is this operand a quantity at all" already implies
+    // "...with real, nonzero units" — no separate all-zero check is
+    // needed anywhere below.
+    function quantityBroadcast(a, b, op, opName) {
+      var aIsQ = isQuantityValue(a), bIsQ = isQuantityValue(b);
+      var aDims = aIsQ ? a.dims : makeDims();
+      var bDims = bIsQ ? b.dims : makeDims();
+      var aVal = aIsQ ? a.value : a;
+      var bVal = bIsQ ? b.value : b;
+
+      if (opName === "+" || opName === "-") {
+        if (!aIsQ || !bIsQ) throw new Error("cannot add/subtract a plain number and a quantity with units");
+        if (!dimsEqual(aDims, bDims)) throw new Error("cannot add/subtract quantities with different units");
+        return collapseIfDimensionless(makeQuantity(op(aVal, bVal), aDims, a.displayUnit));
+      }
+      if (opName === "*") {
+        var mulDims = combineDims(aDims, bDims, 1);
+        return collapseIfDimensionless(makeQuantity(aVal * bVal, mulDims, findNamedUnitForDims(mulDims)));
+      }
+      if (opName === "/") {
+        var divDims = combineDims(aDims, bDims, -1);
+        return collapseIfDimensionless(makeQuantity(aVal / bVal, divDims, findNamedUnitForDims(divDims)));
+      }
+      if (opName === "^") {
+        // Only the base (a) may be a quantity; the exponent (b) must be
+        // a plain, dimensionless number (by the invariant above, a
+        // surviving quantity b is NEVER dimensionless, so bIsQ alone is
+        // enough to reject it).
+        if (bIsQ) throw new Error("exponent must be a plain number, not a quantity");
+        if (!aIsQ) return Math.pow(aVal, bVal);
+        var newDims = {};
+        DIM_KEYS.forEach(function (k) {
+          var raw = aDims[k] * bVal, rounded = Math.round(raw);
+          // Same 1e-9 tolerance convention checkMatrixIndex()/
+          // parseRangeDefinition() already use elsewhere in this file.
+          if (Math.abs(raw - rounded) > 1e-9) throw new Error("fractional unit exponent not supported");
+          newDims[k] = rounded;
+        });
+        return collapseIfDimensionless(makeQuantity(Math.pow(aVal, bVal), newDims, null));
+      }
+      // No opName at all: parseComparisonExpr()'s own signal (see its
+      // comment) that this is a comparison, not an arithmetic combine —
+      // same dims-matching rule as +/-, but the result is `op`'s own 1/0
+      // applied directly to the two SI values, never wrapped back into a
+      // quantity.
+      if (!aIsQ || !bIsQ) throw new Error("cannot compare a plain number and a quantity with units");
+      if (!dimsEqual(aDims, bDims)) throw new Error("cannot compare quantities with different units");
+      return op(aVal, bVal);
+    }
+
     // Built-in numeric constants (e, pi) every fresh `vars` object the
     // evaluator uses should start with, so a plain identifier lookup finds
     // them by default anywhere — math lines, matrix cells, 2D/3D graph
@@ -871,8 +1118,17 @@
     // caller's later "e:=5"-style override into its own `vars` can never
     // leak into another's. Deliberately excludes i/j (complex numbers) —
     // out of scope for this constant-seeding feature.
+    //
+    // The single-letter units (m, s, A, K, N — see the units database
+    // above) are seeded here too, exactly like e/pi: shadowable by a
+    // later same-named user definition via the same plain-overwrite
+    // mechanism, nothing new needed for that part.
     function freshBuiltinVars() {
-      return { e: Math.E, "\\pi": Math.PI };
+      var vars = { e: Math.E, "\\pi": Math.PI };
+      UNIT_TABLE.forEach(function (u) {
+        if (u.singleLetter) vars[u.symbol] = makeQuantity(u.seed, u.dims, u.symbol);
+      });
+      return vars;
     }
 
     // Built-in named functions (sin, cos, ..., ln, log, exp, and their
@@ -1317,8 +1573,8 @@
       function parseExpr() {
         var v = parseTerm();
         for (;;) {
-          if (eat("+")) v = broadcast(v, parseTerm(), function (x, y) { return x + y; });
-          else if (eat("-")) v = broadcast(v, parseTerm(), function (x, y) { return x - y; });
+          if (eat("+")) v = broadcast(v, parseTerm(), function (x, y) { return x + y; }, "+");
+          else if (eat("-")) v = broadcast(v, parseTerm(), function (x, y) { return x - y; }, "-");
           else break;
         }
         return v;
@@ -1338,7 +1594,7 @@
         var v = parsePow();
         for (;;) {
           if (eat("\\cdot") || eat("\\times") || eat("*")) v = broadcast(v, parsePow(), function (x, y) { return x * y; }, "*");
-          else if (eat("\\div")) v = broadcast(v, parsePow(), function (x, y) { return x / y; });
+          else if (eat("\\div")) v = broadcast(v, parsePow(), function (x, y) { return x / y; }, "/");
           else {
             skipWs();
             var c = peek();
@@ -1362,6 +1618,17 @@
         if (!usesLeft && !eat("(")) throw new Error("expected ( after function name");
         var arg = parseExpr();
         if (usesLeft) eat("\\right)"); else eat(")");
+        // Every NATIVE_BUILTINS/WRAPPED_BUILTINS entry (sin, ln, exp, ...)
+        // funnels through here, so this is the one choke point that needs
+        // the guard: a transcendental function given a unit-bearing
+        // quantity is a clear error, not a silently wrong number (a
+        // surviving {__quantity} is always non-dimensionless — see
+        // collapseIfDimensionless()'s own comment — so no extra all-zero
+        // check is needed here). Deliberately NOT built into
+        // broadcastUnary() itself: that function is also used for unary
+        // minus, which legitimately must allow a dimensioned quantity
+        // through.
+        if (isQuantityValue(arg)) throw new Error("this function requires a plain, dimensionless number, not a quantity with units");
         return broadcastUnary(arg, fn);
       }
       // Exponentiation: "^" followed by either a braced group (as
@@ -1398,7 +1665,7 @@
             throw new Error("a matrix only supports ^T (transpose) or ^-1 (inverse)");
           }
           var exp = peek() === "{" ? evalSub(parseGroup()) : parseUnary();
-          v = broadcast(v, exp, function (b, e) { return Math.pow(b, e); });
+          v = broadcast(v, exp, function (b, e) { return Math.pow(b, e); }, "^");
         }
         return v;
       }
@@ -1430,14 +1697,45 @@
           var radicand = evalSub(parseGroup());
           if (idx !== null) {
             var n = evalSub(idx);
-            return broadcast(radicand, n, function (r, nn) { return Math.pow(r, 1 / nn); });
+            // "^" opName, same as parsePow()'s own exponent handling —
+            // but the REAL exponent reaching the dims math has to be 1/n,
+            // not n itself (this is an nth root, not an nth power), so
+            // 1/n is what's passed as broadcast()'s own "b" argument,
+            // with the op function adjusted to match (just Math.pow(r,
+            // nn) now that nn already IS 1/n, not 1/nn of it again).
+            return broadcast(radicand, 1 / n, function (r, nn) { return Math.pow(r, nn); }, "^");
           }
-          return broadcastUnary(radicand, Math.sqrt);
+          // An un-indexed \sqrt is mathematically ^(1/2) — routed through
+          // the same broadcast()/"^" quantity path as an explicit index
+          // above (rather than left on broadcastUnary(), which passes a
+          // quantity's dims through UNCHANGED — correct for unary minus,
+          // but wrong here: sqrt(m^2) must halve dims to m^1, not leave
+          // them at m^2). This is a deliberate adjustment beyond the
+          // call sites the units design explicitly enumerated (which
+          // only named the explicit-index branch above) — without it,
+          // a bare "\sqrt{m^2}" would silently render as "m^2" instead
+          // of "m", and "\sqrt{m}" would silently render as "m" instead
+          // of correctly throwing "fractional unit exponent not
+          // supported" (length:1 isn't evenly halvable). Reusing the
+          // exact same "^" dims machinery costs nothing extra and closes
+          // that gap; a plain (non-quantity) radicand is completely
+          // unaffected, since quantityBroadcast() is never reached for
+          // one (see broadcast()'s own isQuantityValue() gate).
+          return broadcast(radicand, 0.5, function (r, e) { return Math.pow(r, e); }, "^");
         }
         if (eat("\\frac")) {
           var num = evalSub(parseGroup());
           var den = evalSub(parseGroup());
-          return broadcast(num, den, function (x, y) { return x / y; });
+          // "/" opName, same as \div above: MathQuill's own default
+          // behavior turns a typed "/" into \frac{}{} (confirmed
+          // empirically, same standard as every other MathQuill-emission
+          // claim in this file), so \frac — not \div — is actually the
+          // ONLY reachable path a user hits when dividing by typing "/",
+          // including dividing two quantities ("m/s"). \div is kept for
+          // completeness but isn't the realistic division path, so \frac
+          // needs the same opName the units design otherwise only called
+          // out for \div.
+          return broadcast(num, den, function (x, y) { return x / y; }, "/");
         }
         if (eat("\\left(")) {
           var v = parseExpr();
@@ -1571,6 +1869,31 @@
           pos += 3;
           return callMatrixIndexFn(colOf);
         }
+        // Multi-letter unit symbols (kg, mol, cd, Pa, Hz — see the units
+        // database above): checked as a literal substring match, same
+        // pattern as trace/solve/mean/etc. above, but WITHOUT their
+        // paren-gate — a unit is never a function call, so there's no
+        // "(" to require immediately after it. Placed after every
+        // trace/solve/mean/median/variance/stdev/row/col check above
+        // (consistency with this file's existing literal-substring
+        // ordering; no functional requirement either way since units
+        // never collide with any of those, which all require a trailing
+        // "("), and before the generic single-letter/Greek-command
+        // identifier fallback just below, so e.g. "kg" is recognized as
+        // one token rather than split into "k" plus a leftover "g".
+        // Accepted, deliberate collision risk (same tradeoff this file
+        // already makes for trace/solve, just without their paren gate):
+        // a user who types two bare adjacent single-letter variables
+        // that happen to spell "kg"/"Pa"/"Hz"/"mol"/"cd" (meaning k*g,
+        // say) gets the unit instead. Bounded to this short, curated
+        // list, not a general risk.
+        for (var ui = 0; ui < MULTI_LETTER_UNITS.length; ui++) {
+          var unitDef = MULTI_LETTER_UNITS[ui];
+          if (src.startsWith(unitDef.symbol, pos)) {
+            pos += unitDef.symbol.length;
+            return makeQuantity(unitDef.seed, unitDef.dims, unitDef.symbol);
+          }
+        }
         // A variable (a single Latin letter or a Greek command token —
         // see matchIdentifierAt()) or a user-defined function call.
         var ident = matchIdentifierAt(src, pos);
@@ -1668,6 +1991,20 @@
       // handling BEFORE the "=" keystroke is ever typed into the field
       // (see its own comment), so no existing math/matrix/graph line's
       // evaluated text can ever contain one of these tokens already.
+      //
+      // Units (TODO.md's units item): deliberately NOT given an opName
+      // below, unlike every arithmetic operator above — quantityBroadcast()
+      // (see broadcast()'s own quantity branch) treats an undefined opName
+      // specifically as "this is a comparison": both sides must be
+      // quantities with exactly matching dims (a mismatch, or a quantity
+      // compared against a plain number, is a clear error), and the
+      // result is `op`'s own 1/0 applied directly to the two canonical SI
+      // values — never wrapped back into a quantity, so there's nothing to
+      // collapseIfDimensionless() here. This is the only place in the
+      // whole grammar broadcast() is ever called without an opName now
+      // that every other call site above passes one explicitly, which is
+      // exactly what makes "undefined" a safe, unambiguous signal for
+      // quantityBroadcast() to key off of.
       function parseComparisonExpr() {
         var v = parseExpr();
         if (eat("\\leq")) return broadcast(v, parseExpr(), function (x, y) { return x <= y ? 1 : 0; });
@@ -1712,7 +2049,18 @@
       }
       var start = evaluateLatex(startLatex, vars, funcs);
       var end = evaluateLatex(afterLatex, vars, funcs);
-      var step = secondLatex !== null ? evaluateLatex(secondLatex, vars, funcs) - start : (end >= start ? 1 : -1);
+      var second = secondLatex !== null ? evaluateLatex(secondLatex, vars, funcs) : null;
+      // Units (TODO.md's units item): a quantity as a range bound is an
+      // explicit v1 exclusion — a clear, named error here rather than
+      // relying on the isFinite() fallback just below, which already
+      // prevents a crash (JS's "-" on two quantity *objects* isn't a
+      // number at all, so !isFinite(step) would already catch it) but
+      // with a confusing generic "invalid range step" message instead of
+      // naming the actual cause.
+      if (isQuantityValue(start) || isQuantityValue(end) || isQuantityValue(second)) {
+        throw new Error("range bounds must be plain numbers, not quantities");
+      }
+      var step = second !== null ? second - start : (end >= start ? 1 : -1);
       if (!step || !isFinite(step)) throw new Error("invalid range step");
       var values = [];
       if (step > 0) {
@@ -1783,7 +2131,16 @@
         if (l.type === "matrix" && l.name) {
           try {
             var mrows = l.rows.map(function (row) {
-              return row.map(function (cell) { return evaluateLatex(cell.latex(), vars, funcs); });
+              return row.map(function (cell) {
+                var cellVal = evaluateLatex(cell.latex(), vars, funcs);
+                // Units (TODO.md's units item): a matrix cell holding a
+                // unit-bearing quantity is an explicit v1 exclusion — a
+                // clear thrown error, not attempted arithmetic. Thrown
+                // here lands in this same try/catch, so it's skipped the
+                // same way any other bad/circular matrix def already is.
+                if (isQuantityValue(cellVal)) throw new Error("a matrix cell cannot hold a unit-bearing quantity");
+                return cellVal;
+              });
             });
             vars[l.name] = makeMatrix(mrows);
           } catch (e) { /* skip bad/circular matrix defs, same as any other definition */ }
@@ -2824,6 +3181,7 @@
         var defs = collectDefinitions(line);
         var result = evaluateLatex(exprLatex, defs.vars, defs.funcs);
         if (isMatrixValue(result)) appendMatrixResult(line, result.rows);
+        else if (isQuantityValue(result)) appendQuantityResult(line, result);
         else line.mathField.typedText(formatNumber(result));
       } catch (e) { /* leave just the "=" */ }
     }
@@ -2877,6 +3235,62 @@
       wrap.appendChild(rightBracket);
       line.el.appendChild(wrap);
       line.resultMatrixEl = wrap;
+    }
+
+    // Renders a quantity-valued "=" result (5kg, 2kg*9.8(m/s^2), ...) as
+    // the number followed by its unit label — same "append a sibling of
+    // the line's own MathQuill field" pattern as appendMatrixResult()/
+    // appendFormulaResult() above, just a plain text label rather than a
+    // typeset widget (a unit symbol never needs MathQuill's own
+    // rendering).
+    //
+    // Label/value precedence:
+    //   1. quantity.displayUnit, when it names one of this file's own
+    //      known units (UNIT_SEED_VALUES) — the operand's original unit
+    //      survived whatever produced this result (a bare unit on its
+    //      own, or an op that preserves it, like +/-). Divide the
+    //      canonical SI value by that unit's own seed to get the number
+    //      to show in that unit.
+    //   2. Otherwise, an exact dims match against the small named-
+    //      derived-unit table (N, Pa, Hz) — e.g. 2kg*9.8(m/s^2) has no
+    //      single surviving displayUnit (it's a product of three
+    //      different units), but its resulting dims match N's exactly.
+    //   3. Otherwise, an auto-generated compound label straight from
+    //      dims (dimsLabel()) — e.g. "m/s" for 10m/2s, which matches no
+    //      named unit at all.
+    function appendQuantityResult(line, quantity) {
+      var label, displayValue;
+      if (quantity.displayUnit && UNIT_SEED_VALUES.hasOwnProperty(quantity.displayUnit)) {
+        label = quantity.displayUnit;
+        displayValue = quantity.value / UNIT_SEED_VALUES[label];
+      } else {
+        var named = findNamedUnitForDims(quantity.dims);
+        label = named || dimsLabel(quantity.dims);
+        displayValue = quantity.value;
+      }
+      var wrap = document.createElement("span");
+      wrap.className = "result-quantity";
+      var numEl = document.createElement("span");
+      numEl.className = "result-quantity-value";
+      // The number itself goes through MQ.StaticMath, same as a matrix
+      // cell's own value above — keeps it in the same math font/italics
+      // as the "=" and expression it follows, rather than the page's
+      // plain text font. The unit label is deliberately plain upright
+      // text instead (no MathQuill), both because a compound label can
+      // contain "/"/"·" this MathQuill build isn't guaranteed to render
+      // correctly (see appendMatrixResult()'s own comment on this bundle
+      // having NO bmatrix/array support, confirmed empirically rather
+      // than assumed — same caution applies here) and because upright
+      // (non-italic) unit text vs. italic variable text is the standard
+      // typographic convention this mirrors anyway.
+      MQ.StaticMath(numEl).latex(formatNumber(displayValue));
+      var unitEl = document.createElement("span");
+      unitEl.className = "result-quantity-unit";
+      unitEl.textContent = label;
+      wrap.appendChild(numEl);
+      wrap.appendChild(unitEl);
+      line.el.appendChild(wrap);
+      line.resultQuantityEl = wrap;
     }
 
     // The single place that types one character into a math line's field,
@@ -2964,6 +3378,12 @@
           edit: function () {
             if (line.resultMatrixEl) { line.resultMatrixEl.remove(); line.resultMatrixEl = null; }
             if (line.resultFormulaEl) { line.resultFormulaEl.remove(); line.resultFormulaEl = null; }
+            // A quantity-valued "=" result (see appendQuantityResult()) is
+            // the exact same kind of DOM sibling as the two above — a
+            // unit-bearing result (TODO.md's units item) needs the same
+            // stale-widget cleanup on re-edit, or a stale "5 kg" would
+            // keep sitting there after the expression producing it changed.
+            if (line.resultQuantityEl) { line.resultQuantityEl.remove(); line.resultQuantityEl = null; }
             completionOnFieldEdited(mathField);
           }
         }

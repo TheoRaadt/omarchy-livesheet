@@ -1,3 +1,4 @@
 - [Live verification fallback](feedback_live_verification.md) — how to drive notebook.html live when claude-in-chrome isn't connected, and the insertChar("=") vs typedText("=") trap
 - [Symbolic integration design](symbolic-calculus-integration.md) — phase 2 (indefinite integrals) trigger syntax and scope decisions, built on phase 1's AST
 - [Program blocks](program-blocks.md) — for/while/if/break/continue/return construct: data model, keybindings, interpreter, known v1 limitations
+- [Units Phase 1 quantity type](units-phase1-quantity-type.md) — quantity type/dims threading, 3 spec gaps found (\frac opName, un-indexed sqrt, edit-handler cleanup), the collapseIfDimensionless invariant
