@@ -1231,3 +1231,14 @@ below was verified by building (`bin/build`), running the backend tests
   path, then confirmed `2*A=` and `A*2=` both produce `[[2,4],[6,8]]`
   from `A=[[1,2],[3,4]]`; `A+A=`, `A*A=` (matrix×matrix), `A/2=`, and
   `2/A=` all still produce no matrix result (still throw), unchanged.
+- 2026-11-26: Backspace-deletes-pristine-structure, the program-block
+  nesting cap lift, and general matrix indexing (`M_{i,j}`/`M_i`,
+  `row()`/`col()`) all shipped and live-verified this session (details
+  above). `bin/build`/`bin/test` re-confirmed clean (7/7) afterward —
+  expected, since nothing backend-side changed, but run anyway as a
+  whole-project sanity check before closing out the session. Also
+  brought `README.md`'s matrix/program-block sections up to date,
+  including documenting `det`/`trace`/`^T`/`^-1`/`solve`/`mean`/
+  `median`/`variance`/`stdev`, which had been shipped and verified in
+  this file across earlier sessions but never made it into the
+  user-facing feature list.
