@@ -72,11 +72,10 @@ Inside a math field:
   Greek letter (Mathcad's own convention — see the Shortcuts table
   below for the full mapping), usable as an ordinary variable name,
   function name, or function parameter just like a Latin letter, e.g.
-  `Ctrl+B` then `:5` defines `β := 5`. **Known limitation**: only works
-  once the line is already a math field — unlike every other shortcut
-  here, it does nothing as literally the first keystroke on a
-  brand-new line (type any other character first, then it works). Fix
-  queued, see `TODO.md`
+  `Ctrl+B` then `:5` defines `β := 5`. Works as literally the first
+  keystroke on a brand-new line too — it converts the line to a math
+  field and inserts the letter in one step, the same as typing any
+  other character first would
 - **Enter** starts a new line; **Backspace** at the start of an empty line
   removes it and returns you to the end of the previous one
 
