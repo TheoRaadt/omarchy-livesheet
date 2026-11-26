@@ -1287,10 +1287,18 @@ below was verified by building (`bin/build`), running the backend tests
   (devtools) are — unlike those two, "Help" in real Chrome is a menu
   action, not a global accelerator, so there's nothing underneath for
   the page's own unconditional `preventDefault()` to need to race
-  against. (Attempted to also confirm this by launching the real
-  compiled binary and sending a literal F1 keypress under Hyprland;
-  blocked by this sandbox's non-standard Lua-based `hyprctl dispatch`
-  syntax rejecting both classic and guessed Lua-call forms for
-  workspace-switching/window-focusing, so that specific visual
-  confirmation wasn't completed — the grep + Chromium-accelerator
-  reasoning above was judged sufficient in its place.)
+  against.
+  - **Confirmed directly against the real compiled binary** (follow-up
+    the same session, after working around this sandbox's non-standard
+    Lua-based `hyprctl dispatch` syntax — see
+    `.claude/projects/.../memory/hyprctl-lua-dispatch-quirk.md` for the
+    `wtype -M alt -k Tab -m alt` workaround that sidesteps it entirely):
+    launched `build/livesheet` fresh, `wtype`'d a literal `F1` keypress,
+    and `grim`-screenshotted the actual running window — the overlay
+    opened correctly, with every section (line types through the App
+    table) rendering and scrolling correctly. `Escape` closed it
+    cleanly with focus genuinely back in the empty pending line
+    (cursor visible, blinking). `Ctrl+L` while the overlay was open
+    correctly flipped its colors live (confirmed via a second
+    screenshot, light → dark). No native interception of F1 by Qt/
+    Chromium observed, confirming the static analysis above.
