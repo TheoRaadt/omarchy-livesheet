@@ -981,6 +981,114 @@ below was verified by building (`bin/build`), running the backend tests
     revert-to-pending on an emptied bare program all confirmed.
     Regression, same session: `2+3=` → `5`, `d/dx(x)=` and `\int(x)dx=`
     both still produce a formula result — unaffected.
+  - **Backspace now deletes a whole pristine `for`/`while`/`if`
+    structure**, closing the rough edge noted above: Backspace-when-
+    empty on a structure's first header field (`for`'s "var",
+    `while`/`if`'s "cond") removes the entire structure — but only when
+    `isStructurePristine()` confirms nothing's been typed anywhere in
+    it since insertion (every header field still empty, body/bodies
+    still exactly the untouched starter statement). A non-pristine
+    structure, or Backspace on a `for`'s second header field ("coll"),
+    keeps the old behavior (move focus to the previous field) —
+    deliberately scoped this way so a half-filled-in loop/if can never
+    be silently discarded by one keystroke; this is the intended final
+    shape, not a remaining gap. Live-verified over the CDP fallback
+    (bare for/while/if each revert the whole line to pending when
+    deleted as the program's only statement; a `for` inserted as a
+    second top-level statement removes cleanly without disturbing the
+    assign statement before it; typing into a structure's body/header
+    before backspacing correctly blocks deletion; the "coll" field
+    still only navigates, never deletes), including one pass with a
+    genuine CDP `Input.dispatchKeyEvent` Backspace (not a direct
+    function call) to confirm MathQuill's `deleteOutOf` wiring reaches
+    the new logic end-to-end.
+  - **Program-block nesting is now unrestricted**, closing the other
+    rough edge noted above: any number of `for`/`while`/`if` structures
+    can coexist at the same level, and any of them can nest inside
+    another's body/branches, to any depth (previously: at most one
+    `for`/`while` and one `if`, ever, both top-level only, bodies
+    restricted to plain statements). The interpreter
+    (`runStatement()`/`runStatementList()`), the field-navigation model
+    (`programFieldList()`), statement lookup (`locateStatement()`), and
+    rendering (`renderStatement()`'s `nestedBody()`) were all already
+    written as plain unconditional recursion with no depth assumption —
+    the v1 cap was enforced in exactly one place,
+    `insertStructural()`'s guard clauses, so lifting it was a one-
+    function change plus updating several comments that had asserted
+    "only one level" as if it were still enforced elsewhere. Also
+    confirmed the pristine-Backspace-deletes-a-structure behavior above
+    generalizes to a nested structure with no extra code: deleting a
+    nested, untouched structure removes just that one, leaving its
+    parent and siblings untouched; a nested structure with real content
+    still can't be deleted this way, same safety rule as at the top
+    level. Live-verified (claude-in-chrome connected this session):
+    nested a `while` inside a `for`'s body via real `Ctrl+Shift+R`/`W`
+    keystrokes; ran two sequential top-level `for` loops end to end
+    (`s←0; for i in r: s←s+i; for i in r: s←s+i; s` → `12`, confirming
+    both actually execute, not just that the UI accepted the insert);
+    inserted a second top-level `if`; built and ran a 2-level nested
+    `for`-inside-`for` sum (`for i in r: for j in r: s←s+i·j` → `36`,
+    i.e. `(1+2+3)²`); confirmed Backspace-deletes-pristine-structure on
+    a nested structure both deletes-when-pristine and declines-when-
+    not, exactly mirroring the top-level case above. One cosmetic note
+    recorded in-code rather than fixed: `.program-body-nested`'s
+    `opacity: 0.92` compounds multiplicatively per nesting level (≈0.85
+    at 2 levels, ≈0.78 at 3) since each nested div is its own
+    compositing layer — checked live at 3 levels and judged still
+    clearly legible, so left as-is.
+  - **Newly-documented v1 limitation, found while verifying the above,
+    not introduced by it**: a `for`'s collection field only accepts a
+    reference to an already-defined range variable (`i:=1..3` on an
+    earlier line, then `for x in i`) — typing an inline range literal
+    directly into the field (`for x in 1..10`) fails, because
+    `evaluateLatex()` itself has no `\ldots`/range-literal handling at
+    all; only `parseRangeDefinition()` (used solely by
+    `collectDefinitions()` for a `name:=start..end` binding line) does.
+    This is exactly the natural thing a user would try first, and fails
+    with an unhelpful "trailing input" error rather than a clear
+    message — worth revisiting (either teach `evaluateLatex()` to parse
+    an inline range, or at least give `for`'s own error path a clearer
+    message for this specific case) if real use of program blocks hits
+    it, but not explicitly requested yet, so not queued as open work.
+  - **General matrix indexing** — `M_{i,j}` (scalar element at row `i`,
+    column `j`, 1-indexed) and `M_i` (the `i`-th element of a
+    vector-shaped matrix, 1 row or 1 column; a clear error on a
+    genuinely 2D matrix telling the user to use `M_{i,j}` instead), plus
+    new `row(M, i)`/`col(M, j)` builtin functions returning a new 1×n
+    row or n×1 column matrix value. This is the real fix for the
+    `for`-row/column rough edge noted above: `for x in row(M, 2)` needed
+    ZERO changes to `for`'s own runtime code, because `flattenCollection()`
+    already flattens any matrix value row-major — `row()`/`col()` just
+    had to hand it one. Empirically confirmed before writing any parsing
+    code (throwaway MathField against the shipped `mathquill.min.js`,
+    same standard as every other LaTeX-emission claim in this file): a
+    typed `_` emits a bare, unbraced single character for exactly one
+    plain character (`M_2`, `M_i`) — same "single character skips
+    braces" rule `parsePow()`'s `^T` exponent handling already relies
+    on, confirmed separately rather than assumed by analogy — and a
+    braced `{...}` group for anything longer (multi-digit, a
+    comma-separated pair, a Greek command, a negative number); an empty
+    subscript renders as `M_{ }`, never a bare dangling `_`, so there's
+    no reachable brace-less-and-empty gap in the parser. Neither `row(`
+    nor `col(` is in MathQuill's native `autoOperatorNames` table (come
+    back as plain typed letters, same as `trace`/`solve`/`mean`), so
+    both use the same literal-substring-gated-on-"(" treatment as those.
+    Index validation (`checkMatrixIndex()`): must be finite and within
+    `1e-9` of an integer, then bounds-checked to `[1, max]`; a clear,
+    label-specific error either way. A subscript after a plain scalar
+    variable (not a matrix) is a clear error too, not silent
+    misbehavior. Live-verified: a real 3×3 matrix and a real 1×3 vector
+    built through the app's own DOM-builder functions; `M_{2,3}=`,
+    `V_2=`, `row(M,2)=`/`col(M,2)=` (each rendering as a real
+    `.result-matrix` via the existing, unchanged matrix-result display
+    path) all correct; `M_1` on the 2D matrix throws the documented
+    "use `M_{i,j}` instead" error; out-of-range and non-integer indices
+    on both `M_{i,j}` and `row`/`col` all rejected cleanly; a real
+    program-block statement tree (`s←0; for x in row(M,2): s←s+x; s`,
+    built with the actual statement/field constructors, not simulated
+    keystrokes) correctly summed row 2 (`[4,5,6]` → `15`) through the
+    real, unmodified interpreter; `det`/`trace`/`^T`/`^-1`/plain-scalar
+    regressions all unaffected.
 
 ## Not done / out of scope (per README's own "Notes" section)
 

@@ -156,9 +156,16 @@
   .program-field {
     display: inline-block;
   }
-  /* A for/while/if's own body — one level of indentation only (§6 of
-     the spec: a body never contains another for/while/if), so this
-     never needs to nest inside itself. */
+  /* A for/while/if's own body. Nesting is unrestricted (TODO.md's
+     original v1 cap of one level was lifted — see insertStructural()'s
+     own comment in the <script> below), so this DOES need to nest
+     inside itself now, and does so correctly as-is: each level just
+     compounds the same margin/padding/border indentation, which reads
+     fine arbitrarily deep. The one thing worth watching at 2-3+ levels
+     is the `opacity` below, which — unlike the indentation — compounds
+     multiplicatively (0.92² ≈ 0.85 at two levels, 0.92³ ≈ 0.78 at
+     three, ...) since each nested div is its own semi-transparent
+     compositing layer painted inside its parent's already-reduced one. */
   .program-body-nested {
     display: flex;
     flex-direction: column;
@@ -537,6 +544,28 @@
       }
       throw new Error("expected a range or matrix argument (e.g. i:=0;10, or a named matrix)");
     }
+    // Splits a captured subscript's raw text (e.g. "2,3" from a typed
+    // "M_{2,3}") on its top-level comma, for M_{i,j}/row()/col() below —
+    // tracking (){} depth so a nested comma (inside a function call or a
+    // \frac within an index expression) doesn't split the text early.
+    // Plain character counting of "(){}", rather than recognizing
+    // \left(/\right) as atomic tokens, is enough to keep depth balanced
+    // through them too, since each still contains the literal "(" or ")"
+    // character it's counting — the same reasoning captureRawArg() above
+    // relies on for its own depth tracking. Returns a single untrimmed
+    // entry when there's no top-level comma at all (the M_i / row(M,i)
+    // single-index case).
+    function splitTopLevelComma(text) {
+      var parts = [], depth = 0, start = 0;
+      for (var k = 0; k < text.length; k++) {
+        var c = text[k];
+        if (c === "{" || c === "(") depth++;
+        else if (c === "}" || c === ")") depth--;
+        else if (c === "," && depth === 0) { parts.push(text.slice(start, k)); start = k + 1; }
+      }
+      parts.push(text.slice(start));
+      return parts;
+    }
     function meanOf(list) {
       if (list.length === 0) throw new Error("mean: empty collection");
       var sum = 0;
@@ -772,6 +801,53 @@
       for (var i = 0; i < n; i++) sum += rows[i][i];
       return sum;
     }
+    // Validates a 1-indexed matrix index (M_i, M_{i,j}, row(M,i), col(M,j)):
+    // must be a finite number within 1e-9 of an integer (the same
+    // tolerance the range-definition step check above uses for "close
+    // enough to exact" floating-point comparisons), and within [1, max].
+    // Returns the rounded 1-indexed integer, or throws a clear,
+    // label-specific error — an out-of-range or non-integer index is a
+    // normal user mistake, not a crash, per this file's existing
+    // error-throwing conventions (see det's "matrix must be square" etc.).
+    function checkMatrixIndex(idx, max, label) {
+      if (typeof idx !== "number" || !isFinite(idx)) throw new Error(label + ": index must be a number");
+      var rounded = Math.round(idx);
+      if (Math.abs(idx - rounded) > 1e-9) throw new Error(label + ": index must be an integer");
+      if (rounded < 1 || rounded > max) throw new Error(label + ": index out of range");
+      return rounded;
+    }
+    // M_{i,j}: the scalar element at row i, column j (1-indexed).
+    function elementOf(m, i, j) {
+      var rows = m.rows, R = rows.length, C = R ? rows[0].length : 0;
+      var ri = checkMatrixIndex(i, R, "M_{i,j}");
+      var ci = checkMatrixIndex(j, C, "M_{i,j}");
+      return rows[ri - 1][ci - 1];
+    }
+    // M_i: the i-th element of a vector-shaped matrix (exactly 1 row or
+    // exactly 1 column) — a clear error for any other shape, per
+    // TODO.md's spec, rather than guessing row-major order for a
+    // genuinely 2D matrix.
+    function vectorElementOf(m, i) {
+      var rows = m.rows, R = rows.length, C = R ? rows[0].length : 0;
+      if (R === 1) return rows[0][checkMatrixIndex(i, C, "M_i") - 1];
+      if (C === 1) return rows[checkMatrixIndex(i, R, "M_i") - 1][0];
+      throw new Error("M_i: matrix is not a single row or column — use M_{i,j} instead");
+    }
+    // row(M, i) / col(M, j): the builtin-function counterpart of M_{i,j}
+    // above, returning a NEW matrix value (a 1xn row or nx1 column) via
+    // makeMatrix() rather than a scalar — this is what lets
+    // flattenCollection() (and, downstream, a program's "for x in
+    // row(M, i)") already work unchanged, with zero changes to "for"'s
+    // own runtime code (see runStatement()'s "for" case comment below).
+    function rowOf(m, i) {
+      var ri = checkMatrixIndex(i, m.rows.length, "row");
+      return makeMatrix([m.rows[ri - 1].slice()]);
+    }
+    function colOf(m, j) {
+      var rows = m.rows, R = rows.length, C = R ? rows[0].length : 0;
+      var ci = checkMatrixIndex(j, C, "col");
+      return makeMatrix(rows.map(function (r) { return [r[ci - 1]]; }));
+    }
     // Shared Gauss-Jordan elimination (full row reduction to the
     // identity on the left `n` columns, with partial pivoting for
     // numerical stability) over an augmented matrix of `n` rows and
@@ -980,6 +1056,20 @@
         var arg = parseExpr();
         if (usesLeft) eat("\\right)"); else eat(")");
         return fn(flattenCollection(arg));
+      }
+      // Shared by row()/col(): a "(" or "\left(", one expression that
+      // must evaluate to a matrix, a comma, then one scalar index
+      // expression, then the matching close — the two-argument
+      // counterpart of callMatrixFn() above.
+      function callMatrixIndexFn(fn) {
+        var usesLeft = eat("\\left(");
+        if (!usesLeft && !eat("(")) throw new Error("expected ( after function name");
+        var m = parseExpr();
+        if (!isMatrixValue(m)) throw new Error("expected a matrix as the first argument");
+        if (!eat(",")) throw new Error("expected , between arguments");
+        var idx = parseExpr();
+        if (usesLeft) eat("\\right)"); else eat(")");
+        return fn(m, idx);
       }
       // Captures the raw, unevaluated text of one solve(...) argument —
       // up to the next top-level "," or the call's own closing paren,
@@ -1266,6 +1356,28 @@
           pos += 5;
           return callStatFn(stdevOf);
         }
+        // row(M, i) / col(M, j) — TODO.md's matrix-indexing item. Checked
+        // empirically the same way as trace/solve/mean/etc. above (a
+        // throwaway MathField, typing "row(2,3)"/"col(2,3)" and reading
+        // back .latex()): neither name is in MathQuill's native
+        // autoOperatorNames table either — both come back as plain typed
+        // letters ("row\left(2,3\right)"/"col\left(2,3\right)"), not a
+        // recognized command — so they get the identical literal-
+        // substring-gated-on-"(" treatment, with the same collision-risk
+        // reasoning (an exact run of single-letter variables spelled out
+        // AND an immediately-following call-shaped paren). Each returns a
+        // NEW matrix value (a 1xn row or nx1 column, via makeMatrix() in
+        // rowOf()/colOf()) rather than a scalar — that's what lets
+        // flattenCollection() (and a program's "for x in row(M, i)")
+        // already work unchanged, zero changes needed to "for" itself.
+        if (src.startsWith("row", pos) && (src.startsWith("(", pos + 3) || src.startsWith("\\left(", pos + 3))) {
+          pos += 3;
+          return callMatrixIndexFn(rowOf);
+        }
+        if (src.startsWith("col", pos) && (src.startsWith("(", pos + 3) || src.startsWith("\\left(", pos + 3))) {
+          pos += 3;
+          return callMatrixIndexFn(colOf);
+        }
         // A variable (a single Latin letter or a Greek command token —
         // see matchIdentifierAt()) or a user-defined function call.
         var ident = matchIdentifierAt(src, pos);
@@ -1303,6 +1415,33 @@
               // gets evaluated with).
               return fn.program ? runProgram(fn.program, callVars, funcs) : evaluateLatex(fn.body, callVars, funcs);
             }
+          }
+          // M_{i,j} / M_i — TODO.md's matrix-indexing item. A typed "_"
+          // (confirmed empirically, same standard as every other LaTeX-
+          // emission claim in this file: a throwaway MathField, typing
+          // "M_2"/"M_23"/"M_2,3" and reading back .latex()) comes back as
+          // a BARE single character for exactly one plain character
+          // ("M_2", no braces — the same "single character skips the
+          // braces" rule parsePow()'s ^T/^-1 handling already relies on
+          // for exponents), and as a braced "{...}" group for anything
+          // longer (a multi-digit number, a comma-separated pair, a
+          // Greek command, a negative number — "M_{23}"/"M_{2,3}"/
+          // "M_{\beta}"/"M_{-1}"). Both shapes are handled the same way
+          // below by capturing the raw text either way and splitting it
+          // on a top-level comma. Gated on the identifier already being
+          // bound to a matrix value: a subscript after a plain scalar
+          // variable is new/unreachable territory today (nothing
+          // produces that LaTeX currently), so it fails with a clear
+          // error rather than silently doing something wrong.
+          if (eat("_")) {
+            if (!(ident in vars) || !isMatrixValue(vars[ident])) {
+              throw new Error(ident + "_...: subscript indexing requires a matrix variable");
+            }
+            var subText = (peek() === "{") ? parseGroup() : src[pos++];
+            var idxParts = splitTopLevelComma(subText);
+            if (idxParts.length === 2) return elementOf(vars[ident], evalSub(idxParts[0]), evalSub(idxParts[1]));
+            if (idxParts.length === 1) return vectorElementOf(vars[ident], evalSub(idxParts[0]));
+            throw new Error(ident + "_{...}: expected one or two indices (M_i or M_{i,j})");
           }
           if (!(ident in vars)) throw new Error("undefined variable " + ident);
           return vars[ident];
@@ -1546,15 +1685,16 @@
     //   {kind:"for", varField, collField, body:[...]}  -- for i in collField
     //   {kind:"while", condField, body:[...]}
     //   {kind:"if", condField, thenBody:[...], elseBody:[...]}
-    // `body`/`thenBody`/`elseBody` only ever hold assign/return/break/
-    // continue statements — never another for/while/if — per TODO.md's
-    // agreed v1 scope (one level of nesting only). The interpreter itself
-    // doesn't enforce that (nothing stops runStatement from recursing
-    // into a nested "for" if one were ever constructed), it's enforced
-    // entirely on the UI side (insertStructural()'s "top-level only"
-    // guard below) — same division of labor as e.g. MAX_RANGE_LENGTH
-    // being enforced by parseRangeDefinition() rather than by every
-    // caller of it.
+    // `body`/`thenBody`/`elseBody` can hold another for/while/if too —
+    // nesting is unrestricted, at any depth, anywhere a plain assign/
+    // return/break/continue statement could go (TODO.md's original v1
+    // cap of one level of nesting was lifted). The interpreter itself
+    // never enforced that cap in the first place — runStatement's "for"/
+    // "while"/"if" cases just call runStatementList() on whatever's in
+    // `body`/etc., which already recurses into a nested structural
+    // statement with no changes needed — the cap used to be enforced
+    // entirely on the UI side, by insertStructural()'s now-removed
+    // "top-level only"/"at most one" guards.
     //
     // Control flow (§5 of the spec): break/continue/return are thrown
     // sentinel objects, consistent with how this evaluator already uses
@@ -1664,12 +1804,13 @@
         // essentially for free" the way §9 anticipates. A bare scalar
         // collection expression (e.g. "for i in 5") is NOT accepted —
         // flattenCollection() itself throws for one, same as it already
-        // does for mean(5) etc. — and iterating a matrix ROW/COLUMN
-        // specifically (as opposed to the whole flattened matrix) is the
-        // one thing §9 explicitly says to skip if it's not trivial, and
-        // it isn't (no existing representation of "one row of a matrix"
-        // exists anywhere in this file): both are documented limitations,
-        // not built.
+        // does for mean(5) etc. Iterating a matrix ROW/COLUMN specifically
+        // (as opposed to the whole flattened matrix) IS now supported too
+        // — "for i in row(M, 2)" / "for i in col(M, 2)" — but needs ZERO
+        // changes here: row()/col() (TODO.md's matrix-indexing item) just
+        // return an ordinary matrix value (a 1xn row or nx1 column), which
+        // this same flattenCollection() call already flattens like any
+        // other matrix.
         var items = Array.isArray(collection) ? collection : flattenCollection(collection);
         if (items.length > PROGRAM_MAX_ITERATIONS) {
           throw new Error("program: for-loop exceeded " + PROGRAM_MAX_ITERATIONS + " iterations");
@@ -2903,15 +3044,15 @@
     // EVERY line.type switch, not just the one being worked on.
     //
     // Shape: line.statements is the flat top-level sequence (§6 of the
-    // spec: a local assignment, AT MOST one for/while loop, AT MOST one
-    // if/otherwise, and any number of return/break/continue statements,
-    // in any order) — each entry is the same {kind, field/varField/
-    // collField/condField, body/thenBody/elseBody} shape runProgram()
-    // above already consumes. A structural statement's own body is
-    // restricted to plain assign/return/break/continue — never another
-    // for/while/if — enforced here, on the UI side (insertStructural()'s
-    // "top-level only" guard below), per §6's "one level of nesting
-    // only" v1 scope.
+    // spec: any number of local assignments, for/while loops, if/
+    // otherwise branches, and return/break/continue statements, in any
+    // order) — each entry is the same {kind, field/varField/collField/
+    // condField, body/thenBody/elseBody} shape runProgram() above already
+    // consumes. A structural statement's own body can hold another for/
+    // while/if too — nesting is unrestricted, at any depth. (TODO.md's
+    // original v1 scope capped this at one level of nesting and at most
+    // one loop/one if; that cap was lifted — see insertStructural()'s own
+    // comment for why removing it needed almost no code change.)
     //
     // Visual grouping (§7): a single left brace-like bracket spans the
     // whole block, reusing the exact same CSS border-based bracket
@@ -2945,12 +3086,28 @@
     // after the whole structure", since that's the only way to ever get
     // a first statement into a loop/if body at all. Backspace on an
     // EMPTY field removes that one assign/return/break/continue
-    // statement (never a whole for/while/if structure — deleting an
-    // entire loop/if this way isn't supported in this v1, a documented
-    // rough edge, not an oversight) and, if that was the program's only
-    // remaining top-level statement, reverts the whole line back to a
-    // blank pending line, mirroring convertToMatrix's own
-    // revertToPending() for an emptied 1x1 matrix.
+    // statement and, if that was the program's only remaining top-level
+    // statement, reverts the whole line back to a blank pending line,
+    // mirroring convertToMatrix's own revertToPending() for an emptied
+    // 1x1 matrix. Backspace on a for/while/if's FIRST header field
+    // (a `for`'s "var", a `while`/`if`'s "cond") ALSO deletes the whole
+    // structure, but only when it's still pristine — untouched since
+    // insertion, i.e. every header field is empty and its body (both
+    // bodies, for `if`) is still exactly the one starter "assign"
+    // statement it was created with, itself still empty too (see
+    // isStructurePristine() below). This was deliberately scoped to
+    // "pristine only", not "always delete on empty header": a `for`/
+    // `while`/`if` typed into even partially (a condition filled in, a
+    // body statement edited) could easily have real work buried deeper
+    // in its tree that a Backspace on one empty header field should
+    // never silently discard — the same reasoning `revertToPending()`
+    // already applies to a matrix (an emptied matrix reverts, but a
+    // matrix with real content in some other cell never does by this
+    // route). A `for`'s SECOND header field ("coll") never deletes the
+    // structure even when pristine — Backspace there is intra-structure
+    // navigation back to "var", not a deletion gesture, since "coll"
+    // being empty while "var" already has a name typed into it isn't
+    // "untouched" by any reasonable reading.
     //
     // Inserting a for/while/if/break/continue/return itself needs its
     // own keystroke, since none of them is a character a user would
@@ -2990,10 +3147,9 @@
     // Walks the whole statement tree once, in reading order, into a flat
     // [{stmt, role}, ...] list — see this section's header comment for
     // why this is the whole navigation model. Recurses into a for/while's
-    // `body` or an if's `thenBody`/`elseBody`, but never deeper than
-    // that (§6: a body never contains another structural statement, so
-    // there's no unbounded recursion risk here — this would need to
-    // change only if nesting depth itself ever did).
+    // `body` or an if's `thenBody`/`elseBody` unconditionally, so this
+    // already handles arbitrary nesting depth (a nested for/while/if
+    // inside another), not just one level.
     function programFieldList(progLine) {
       var list = [];
       function walk(stmts) {
@@ -3016,14 +3172,13 @@
     }
 
     // Finds which list (progLine.statements itself, or some ancestor
-    // for/while's `body`/if's `thenBody`/`elseBody`) currently holds
-    // `targetStmt`, plus its index and the DOM element new siblings
-    // should be inserted relative to — the one place Enter/Backspace/
-    // insertStructural() below all go to answer "where exactly does this
-    // statement live". Only ever recurses one level deep in practice
-    // (§6), but is written as plain recursion rather than a hard-coded
-    // "check top level, then check one level of bodies" so it stays
-    // correct unchanged if nesting depth is ever revisited later.
+    // for/while's `body`/if's `thenBody`/`elseBody`, at any depth)
+    // currently holds `targetStmt`, plus its index and the DOM element
+    // new siblings should be inserted relative to — the one place Enter/
+    // Backspace/insertStructural() below all go to answer "where exactly
+    // does this statement live". Written as plain recursion rather than
+    // a hard-coded "check top level, then check one level of bodies", so
+    // it already resolves a statement nested at any depth correctly.
     function locateStatement(progLine, targetStmt) {
       function search(list, parentEl) {
         for (var i = 0; i < list.length; i++) {
@@ -3083,10 +3238,12 @@
     // `beforeEl` (appended at the end when `beforeEl` is null/undefined)
     // — recurses into a for/while's `body`/an if's `thenBody`/
     // `elseBody` to render any statements the new structural statement
-    // was created with already (insertStructural() below always gives a
-    // brand-new for/while/if exactly one starter assign statement in its
-    // body, so this recursion is at most one level deep in practice,
-    // same as everywhere else in this feature).
+    // was created with already. In practice this recursion is shallow
+    // on any single call (insertStructural() below always gives a
+    // brand-new for/while/if exactly one starter assign statement, never
+    // a nested structural one), but nothing about this function assumes
+    // that — it recurses unconditionally, so rendering a deeply-nested
+    // tree (e.g. one rebuilt from a saved document) works unchanged.
     function renderStatement(progLine, stmt, parentEl, beforeEl) {
       var row = document.createElement("div");
       row.className = "program-stmt program-stmt-" + stmt.kind;
@@ -3165,20 +3322,51 @@
       next.field.focus();
     }
 
-    // Backspace-when-empty: only a plain assign/return/break/continue
-    // statement (role === "expr", or — for break/continue, which have no
-    // field to even call this from — never reached at all) is ever
-    // removed this way; see the header comment for why a whole
-    // for/while/if structure deleting itself isn't supported in v1.
-    function onProgramDeleteOutOf(progLine, stmt, role, dir) {
-      if (dir !== MQ.L) return;
-      if (role !== "expr") {
-        var list0 = programFieldList(progLine);
-        var idx0 = programFieldIndex(progLine, stmt, role);
-        if (idx0 > 0) programFieldFor(list0[idx0 - 1].stmt, list0[idx0 - 1].role).focus();
-        else { var i0 = indexOf(progLine); if (i0 > 0) focusLine(lines[i0 - 1], true); }
-        return;
+    // "Untouched since insertion" check for one for/while/if body list —
+    // true only when it's still exactly the single starter "assign"
+    // statement createStatementObject()/insertStructural() always seed a
+    // brand-new structure's body (or thenBody/elseBody) with, and that
+    // statement's own field is still empty too. Shared because
+    // isStructurePristine() below needs this same check 1-2 times per
+    // structure kind (once for `for`/`while`'s body, twice for `if`'s
+    // thenBody+elseBody).
+    function isStructureBodyPristine(bodyList) {
+      return bodyList.length === 1 && bodyList[0].kind === "assign" &&
+        bodyList[0].field.latex() === "";
+    }
+
+    // True only when NOTHING has been typed anywhere in this structure
+    // since it was inserted — every header field still empty AND its
+    // body/bodies still exactly the untouched starter statement above.
+    // This is what onProgramDeleteOutOf() below gates "delete the whole
+    // structure" on: see its header comment for why pristine-only, not
+    // "always delete on an empty header field".
+    function isStructurePristine(stmt) {
+      if (stmt.kind === "for") {
+        return stmt.varField.latex() === "" && stmt.collField.latex() === "" &&
+          isStructureBodyPristine(stmt.body);
       }
+      if (stmt.kind === "while") {
+        return stmt.condField.latex() === "" && isStructureBodyPristine(stmt.body);
+      }
+      if (stmt.kind === "if") {
+        return stmt.condField.latex() === "" &&
+          isStructureBodyPristine(stmt.thenBody) && isStructureBodyPristine(stmt.elseBody);
+      }
+      return false;
+    }
+
+    // Removes `stmt` itself (whole subtree, for a structural kind) and
+    // refocuses the previous entry in reading order — shared by
+    // onProgramDeleteOutOf()'s two callers below (a plain assign/return/
+    // break/continue statement removing itself, or a pristine for/
+    // while/if structure removing itself wholesale). `role` is whichever
+    // field Backspace was actually pressed in (the statement's own
+    // field for "expr", or the structure's first header field for "var"/
+    // "cond") — that's the field programFieldList() positions the
+    // "previous entry" relative to, computed BEFORE removal so the index
+    // still reflects the pre-removal tree.
+    function deleteStatementAndFocusPrev(progLine, stmt, role) {
       var loc = locateStatement(progLine, stmt);
       if (!loc) return;
       if (loc.parentEl === progLine.bodyEl && progLine.statements.length === 1) {
@@ -3192,6 +3380,34 @@
       loc.list.splice(loc.index, 1);
       if (prevEntry) programFieldFor(prevEntry.stmt, prevEntry.role).focus();
       else { var i1 = indexOf(progLine); focusLine(i1 > 0 ? lines[i1 - 1] : progLine, true); }
+    }
+
+    // Backspace-when-empty: a plain assign/return statement (role ===
+    // "expr"; break/continue have no field to even call this from) always
+    // removes itself. A for/while/if's FIRST header field ("var" for
+    // `for`, "cond" for `while`/`if`) removes the WHOLE structure too,
+    // but only when isStructurePristine() says nothing has been typed
+    // into it anywhere yet — see the section header comment for why this
+    // is deliberately narrower than "any empty header field deletes".
+    // Every other header field (a `for`'s second field, "coll") just
+    // moves focus to the previous field, same as always — intra-
+    // structure navigation, never a deletion gesture.
+    function onProgramDeleteOutOf(progLine, stmt, role, dir) {
+      if (dir !== MQ.L) return;
+      if (role === "expr") {
+        deleteStatementAndFocusPrev(progLine, stmt, role);
+        return;
+      }
+      var isFirstHeaderField = (stmt.kind === "for" && role === "var") ||
+        ((stmt.kind === "while" || stmt.kind === "if") && role === "cond");
+      if (isFirstHeaderField && isStructurePristine(stmt)) {
+        deleteStatementAndFocusPrev(progLine, stmt, role);
+        return;
+      }
+      var list0 = programFieldList(progLine);
+      var idx0 = programFieldIndex(progLine, stmt, role);
+      if (idx0 > 0) programFieldFor(list0[idx0 - 1].stmt, list0[idx0 - 1].role).focus();
+      else { var i0 = indexOf(progLine); if (i0 > 0) focusLine(lines[i0 - 1], true); }
     }
 
     // Left/Right at a field's edge: step to the adjacent entry in
@@ -3329,23 +3545,26 @@
     }
 
     // Inserts a brand-new for/while/if structure right after whichever
-    // top-level statement currently contains the focused field, with one
-    // starter "assign" statement already in its body (so there's
-    // somewhere for the cursor to land next via Enter, same as a
-    // brand-new matrix starting with one empty cell). Top-level only
-    // (§6: one level of nesting) — a no-op when the currently-focused
-    // field belongs to a NESTED body row instead. Also enforces "at most
-    // one loop"/"at most one if" (§6) by simply declining to insert a
-    // second one — not an error, just silently does nothing, the same
-    // "nothing happens" UX this app already gives e.g. Ctrl+Shift+S/P
-    // for Greek Sigma/Pi (deliberately omitted, see GREEK_UPPER's own
-    // comment) rather than a confusing popup for an edge case.
+    // statement currently contains the focused field, with one starter
+    // "assign" statement already in its body (so there's somewhere for
+    // the cursor to land next via Enter, same as a brand-new matrix
+    // starting with one empty cell). Nesting is unrestricted (TODO.md's
+    // original v1 cap — "one level of nesting only", "at most one for/
+    // while", "at most one if" — was lifted): this works identically
+    // whether the focused field belongs to the program's own top-level
+    // statement list or to any for/while's `body`/if's `thenBody`/
+    // `elseBody`, at any depth, and any number of for/while/if structures
+    // can coexist at the same level. The only reason this function could
+    // be this small is that locateStatement() already resolves `loc.list`/
+    // `loc.parentEl` to whichever list/element actually contains the
+    // focused statement, nested or not — every other piece of this
+    // feature (runStatement()'s recursion, programFieldList()'s walk(),
+    // renderStatement()'s nestedBody(), locateStatement() itself) was
+    // already written as plain unconditional recursion from the start,
+    // specifically so lifting this cap would be a one-function change.
     function insertStructural(progLine, atStmt, kind) {
       var loc = locateStatement(progLine, atStmt);
-      if (!loc || loc.parentEl !== progLine.bodyEl) return;
-      if ((kind === "for" || kind === "while") &&
-          progLine.statements.some(function (s) { return s.kind === "for" || s.kind === "while"; })) return;
-      if (kind === "if" && progLine.statements.some(function (s) { return s.kind === "if"; })) return;
+      if (!loc) return;
       var stmt = createStatementObject(kind);
       // Both branches of an "if" need their own starter row — found
       // live: seeding only thenBody left elseBody permanently empty

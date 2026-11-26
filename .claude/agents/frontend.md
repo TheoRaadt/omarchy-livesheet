@@ -577,3 +577,40 @@ the ones below already were.
   `preventDefault()`/`stopImmediatePropagation()` unconditionally the
   moment the modifier+key matches, before checking whether there's a
   resolved target to act on.
+- **2026-11-26** — Built matrix indexing (`M_{i,j}`/`M_i` subscripts,
+  `row(M,i)`/`col(M,j)` builtins — TODO.md's last backlog item, the
+  real fix for "`for` iterating one row/column of a matrix"). Confirmed
+  empirically (throwaway MathField, jquery+mathquill.min.js harness):
+  a typed `_` emits a BARE single character with no braces for exactly
+  one plain character (`M_2`, digit or letter), but braces for
+  anything longer — multi-digit (`M_{23}`), a comma pair (`M_{2,3}`),
+  a Greek command (`M_{\beta}`), or a negative number (`M_{-1}`). Same
+  "single character skips braces" rule as `parsePow()`'s existing `^T`
+  single-char exponent handling, just confirmed separately for `_`
+  rather than assumed by analogy — worth re-confirming per-token even
+  when a sibling token already established the pattern. Also
+  confirmed `row(`/`col(` are NOT in MathQuill's native
+  autoOperatorNames table (come back as plain typed letters, same as
+  `trace`/`solve`/`mean`), so they use the same literal-substring-
+  gated-on-"(" treatment. `row()`/`col()` needed zero changes to
+  `for`'s own runtime code, exactly as scoped — they just return an
+  ordinary matrix value, which `flattenCollection()` already knows how
+  to flatten; confirmed end to end live via a hand-built program
+  (`for x in row(M,2): s<-s+x`, real result 15 for row [4,5,6]) built
+  directly with the real `createStatementObject`/`createProgramField`/
+  `runStatementList` functions rather than a UI keystroke sequence —
+  fast to build and still exercises the real interpreter/evaluator/
+  MathQuill fields, a useful middle ground between a full keystroke-
+  driven UI test and a Node-level logic copy when the feature being
+  verified (program-block statement trees) has no single keybinding
+  that assembles one end to end. Also re-confirmed the general lesson
+  above about extracting a contiguous slice of `notebook.html` for a
+  Node-level pure-logic test: the slice must start before the first
+  function it actually calls, not just before the function being
+  tested — `evaluateLatex()` itself is self-contained, but omitting
+  `broadcast()`/`broadcastUnary()` (defined ~50 lines earlier in the
+  file) from the extracted range threw `ReferenceError: broadcast is
+  not defined` several tests into a run, after the matrix-indexing-
+  specific assertions had already passed — a reminder to extract from
+  a function's own first real dependency, not from "where the feature
+  I'm adding starts."
