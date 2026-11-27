@@ -1409,3 +1409,62 @@ below was verified by building (`bin/build`), running the backend tests
     (dims helpers, every operator's dims math, named-unit lookup,
     collapse behavior, and the same regressions) — see the memory file
     above for the full list.
+- **Physical units, Phase 2 of 2** — pure data entry on top of Phase
+  1's architecture, exactly as Phase 1 anticipated: no arithmetic/
+  display machinery changed. `UNIT_TABLE` grew from 5 single-letter +
+  5 multi-letter entries to 9 single-letter (`m s A K N g J W V F T H
+  C` plus the Greek-command-token `\Omega`/ohm) and 16 multi-letter
+  (`kg mol cd Pa Hz Wb ft in mi cm mm km lb oz hr gal`).
+  `NAMED_DERIVED_SYMBOLS` grew from 3 to 12 (added `J W V F T H C Wb
+  \Omega`).
+  - **Candidate dropped**: `min` (minutes). Confirmed live that typing
+    "min" never produces the literal characters — MathQuill's own
+    `autoOperatorNames` table auto-recognizes it as the atomic
+    minimum-function token `\min` the instant the third character
+    lands, so the literal-substring unit-match mechanism every other
+    multi-letter unit uses can never fire for it. Fixing this would
+    need a real `parseAtom` grammar change (special-casing the `\min`
+    token itself) and would also permanently foreclose ever giving
+    `\min`/`\max` a real min/max-function meaning later — out of this
+    phase's pure-data-entry scope, so dropped rather than worked
+    around. `hr` alone covers the time category for now.
+  - **Bug found and fixed by live testing, not visible from reading
+    the code**: Ω's unit symbol has to be the LaTeX command-token
+    string `"\Omega"` (no Latin-letter form exists), but
+    `appendQuantityResult()`'s unit-label span is plain `textContent`,
+    never MathQuill — every other unit symbol already IS its own
+    correct display text, so this was never an issue before. Left
+    unhandled, an ohm result rendered the literal text `\Omega`
+    instead of the Ω glyph; confirmed by actually typing `\Omega=` and
+    `V/A=` into the real page. Fixed with a small `UNIT_LABEL_DISPLAY`
+    lookup consulted only at the point the label's `textContent` is
+    set — dims-matching/seed-lookup elsewhere correctly keep using the
+    literal `"\Omega"` token, so the fix is scoped to display only.
+  - Ω itself doubles as both the ohm unit and the Greek letter Omega
+    (`Ctrl+Shift+O`) when used as a bare variable — the same kind of
+    shadowable dual-purpose identifier m/s/A/K/N already have, not a
+    new kind of ambiguity.
+  - `gal` (US liquid gallon, 0.003785411784 m³ — not the imperial
+    gallon, a different value) exercises a `length:3` dims vector and
+    confirmed live that the compound-label fallback (`dimsLabel()`)
+    round-trips it correctly (`2*gal=` → `0.007571 m^3`) with no
+    further machinery changes, as Phase 1 predicted.
+  - Deliberately did NOT add any non-SI unit (`ft`/`km`/`lb`/`gal`/
+    etc.) to `NAMED_DERIVED_SYMBOLS` even where its dims match another
+    entry — `findNamedUnitForDims()` returns the first match in that
+    list, and letting e.g. `ft` arbitrarily win over `m` for every
+    length-dims `*`/`/` result would be wrong.
+  - Also added a "Units" section to the in-app `F1` help overlay and
+    to `README.md` (deliberately deferred for Phase 1 — see Phase 1's
+    own note above — now that the real end-user unit list exists).
+  - Verified live via the `livesheet-live-verify` skill's
+    DevTools-Protocol fallback (claude-in-chrome reported "Browser
+    extension is not connected," consistent with this project's prior
+    sessions): confirmed, by reading back actual rendered DOM, `5*g=`
+    → `0.005 kg`, `g=` → `1 g`, `3*ft=` → `0.9144 m`, `2*km=` →
+    `2000 m`, `10*mi=` → `16093.44 m`, `2*hr=` → `7200 s`, `2*gal=` →
+    `0.007571 m^3`, `J=` → `1 J`, `\Omega=` → `1 Ω` (glyph, post-fix),
+    `V*A=` → `1 W`, `V/A=` → `1 Ω`; all 16 multi-letter and 9
+    single-letter symbols' `.latex()` readback confirmed literal (no
+    MathQuill auto-token collisions) except the dropped `min`; and the
+    F1 overlay's new Units section confirmed present via DOM query.

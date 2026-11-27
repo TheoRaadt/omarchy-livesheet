@@ -216,6 +216,25 @@ expression:
 - As a function's body (`f(x):={...`), call it afterward exactly like
   any other function, e.g. `f(5)` followed by `=`
 
+Typing a unit symbol right after a number attaches **physical units**
+to it, e.g. `5*kg` or `3ft`:
+
+- `+`/`-` require matching dimensions (mixing incompatible units, e.g.
+  `5kg+3m`, is a clear error); `*`/`/`/`^` combine or scale them, e.g.
+  `2kg*9.8(m/s^2)=` gives `= 19.6 N` and `10m/2s=` gives `= 5 m/s`
+- Dividing by a compatible unit converts and strips the unit entirely,
+  e.g. `(3*ft)/m=` gives a plain number
+- Single-letter units — `m s A K N g J W V F T H C` (meter, second,
+  ampere, kelvin, newton, gram, joule, watt, volt, farad, tesla, henry,
+  coulomb) and `Ctrl+Shift+O`'s Ω (ohm) — are shadowable by a
+  same-named `name:=` definition, exactly like `e`/`π`
+- Multi-letter units — `kg mol cd Pa Hz Wb` (kilogram, mole, candela,
+  pascal, hertz, weber) plus `ft in mi cm mm km` (length), `lb oz`
+  (mass), `hr` (time), and `gal` (US liquid gallon) — are permanently
+  reserved and never shadowable
+- No Celsius/Fahrenheit or other additive-offset units — only
+  multiplicative unit scaling (Kelvin only, for temperature)
+
 ## Shortcuts
 
 | Key      | Action   |

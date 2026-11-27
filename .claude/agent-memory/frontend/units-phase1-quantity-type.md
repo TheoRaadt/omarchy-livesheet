@@ -1,6 +1,6 @@
 ---
 name: units-phase1-quantity-type
-description: Physical-units Phase 1 (quantity type + core arithmetic) — scope decisions that needed adjusting from the manager's spec, and the MathQuill-emission facts that drove them
+description: Physical-units Phase 1 (quantity type + core arithmetic) and Phase 2 (full unit list) — scope decisions that needed adjusting from the manager's spec, and the MathQuill-emission facts that drove them
 metadata:
   type: project
 ---
@@ -63,3 +63,55 @@ See the dated bullet in `.claude/agents/frontend.md` for the
 MathQuill-specific empirical details (the `\frac` vs `\div` finding, the
 `^` single-char-exponent-adjacent mechanics). This file is the "why/
 scope" record; that one is the "concrete trap" record.
+
+## Phase 2 (2026-11-27): expanded UNIT_TABLE, pure data entry, two findings
+
+Added ft/in/mi/cm/mm/km/lb/oz/hr/gal/Wb (multi-letter) and g/J/W/V/F/T/
+H/C/`\Omega` (single-letter, shadowable) to `UNIT_TABLE`, plus the
+matching symbols into `NAMED_DERIVED_SYMBOLS`. The arithmetic/display
+machinery genuinely needed zero changes, as the manager's spec claimed
+— except for one small, necessary addition (see finding 2 below), which
+is display-only, not arithmetic.
+
+1. **Dropped "min" (minutes) from the candidate list entirely.**
+   MathQuill's `autoOperatorNames` already auto-recognizes "min" as the
+   native minimum-function operator — typing the three characters "m",
+   "i", "n" produces the single atomic LaTeX token `\min` in
+   `.latex()`, not the literal substring "min" this file's
+   literal-substring unit-matching mechanism requires. Confirmed by
+   actually typing it into a throwaway MathField and reading back
+   `.latex()` (`10\cdot\min`), not assumed. Same class of gotcha as the
+   already-documented "asin" case, just for a would-be unit symbol
+   instead of a function name. Fixing it properly would need a
+   `parseAtom` special case for the bare `\min` token — a real grammar
+   change, out of this phase's "pure data entry, no machinery changes"
+   scope — and would also permanently block ever giving `\min`/`\max` a
+   real min/max-function meaning later. "hr" alone covers the time
+   category for now; a future session revisiting minutes should
+   consider a different symbol (not "min") rather than re-fighting this.
+2. **Ω's display label needed a tiny new lookup, `UNIT_LABEL_DISPLAY`.**
+   `appendQuantityResult()`'s unit-label span is plain `textContent`,
+   never MathQuill. Every ASCII unit symbol is already its own correct
+   display text, so this was never a problem before — but Ω's `symbol`
+   has to be the LaTeX command-token string `"\Omega"` (there's no
+   Latin-letter form, and that's the exact token `matchIdentifierAt()`
+   already recognizes via the Greek-letter machinery). Left alone, that
+   literal string renders as the text "\Omega", not the Ω glyph —
+   confirmed live (typed `\Omega=` and `V/A=` into the real page) before
+   trusting the code reading. Fixed with a one-entry `symbol ->
+   display-text` map consulted ONLY at the `textContent =` assignment
+   site, not by normalizing the token earlier — every other place that
+   keys on `quantity.displayUnit`/`findNamedUnitForDims()` (seed
+   lookup, dims matching) correctly wants the literal `"\Omega"` token,
+   so normalizing it away upstream would have broken that.
+
+General lesson for any future phase that adds a unit symbol: (a) always
+actually type a new multi-letter candidate into a throwaway MathField
+and read back `.latex()` before trusting it survives as literal
+characters — don't just reason "it's a short lowercase word, it's
+probably fine" the way "min" looked fine on paper; (b) if a new
+symbol's natural form is a command token rather than its own literal
+display text (anything non-Latin-letter), grep for every place a
+table's `symbol` field gets rendered as plain text, not just where it
+gets matched — matching code and display code can have different
+assumptions about what that string "is."

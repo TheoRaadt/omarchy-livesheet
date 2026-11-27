@@ -454,6 +454,19 @@
         <tr><td><code>Ctrl+Shift+I</code></td><td>Insert an indefinite-integral template, <code>\int(...)dx</code>; <code>=</code> gives the symbolic antiderivative</td></tr>
       </table>
 
+      <h3>Units</h3>
+      <table>
+        <tr><td>Type a unit symbol right after a number</td><td><code>5*kg</code>, <code>3ft</code> — attaches dimensions; <code>+</code>/<code>-</code> require matching dimensions, <code>*</code>/<code>/</code>/<code>^</code> combine or scale them</td></tr>
+        <tr><td>Division by a compatible unit</td><td>Converts — e.g. <code>(3*ft)/m</code> gives a plain, unitless number</td></tr>
+        <tr><td><code>m s A K N g J W V F T H C</code></td><td>Single-letter SI base/derived units (meter, second, ampere, kelvin, newton, gram, joule, watt, volt, farad, tesla, henry, coulomb) — shadowable by a same-named <code>name:=...</code> definition, exactly like <code>e</code>/<code>π</code></td></tr>
+        <tr><td><code>Ctrl+Shift+O</code> (Ω)</td><td>Ohm — also the Greek letter Omega; same dual-purpose, shadowable pattern as the single-letter units above</td></tr>
+        <tr><td><code>kg mol cd Pa Hz Wb</code></td><td>Multi-letter SI units (kilogram, mole, candela, pascal, hertz, weber) — permanently reserved, never shadowable</td></tr>
+        <tr><td><code>ft in mi cm mm km</code></td><td>Length: foot, inch, mile, centimeter, millimeter, kilometer</td></tr>
+        <tr><td><code>lb oz</code></td><td>Mass: pound, ounce</td></tr>
+        <tr><td><code>hr</code></td><td>Time: hour</td></tr>
+        <tr><td><code>gal</code></td><td>Volume: US liquid gallon</td></tr>
+      </table>
+
       <h3>Program blocks</h3>
       <table>
         <tr><td><code>{</code></td><td>Start a program block (or right after <code>f(x):=</code>, as that function's body)</td></tr>
@@ -944,18 +957,21 @@
       return null;
     }
 
-    // Units database (TODO.md's units item, Phase 1's small, bounded
-    // proof-of-concept set — do not add to this list here; Phase 2 is a
-    // separate, later task once this core is reviewed). Two different
-    // mechanisms, driven by a hard constraint already true of this
-    // grammar: matchIdentifierAt() only ever matches a single Latin
-    // letter or a single Greek command token, never a multi-character
-    // name, so a 2+ letter unit symbol (kg, mol, cd, Pa, Hz) could never
-    // be typed as a shadowable "name:=..." definition to begin with (the
-    // LHS parser would only ever capture its first letter) — those are
+    // Units database (TODO.md's units item). Phase 1 shipped a small,
+    // bounded proof-of-concept set (m, s, A, K, N, kg, mol, cd, Pa, Hz)
+    // to validate the arithmetic/display machinery; Phase 2 (this
+    // expansion) is pure data entry on top of that — the machinery
+    // itself needs no changes. Two different mechanisms, driven by a
+    // hard constraint already true of this grammar: matchIdentifierAt()
+    // only ever matches a single Latin letter or a single Greek command
+    // token, never a multi-character name, so a 2+ letter unit symbol
+    // (kg, mol, cd, Pa, Hz, ft, km, ...) could never be typed as a
+    // shadowable "name:=..." definition to begin with (the LHS parser
+    // would only ever capture its first letter) — those are
     // permanently-reserved literal-substring matches in parseAtom
-    // instead, below. A single-letter unit (m, s, A, K, N), by contrast,
-    // IS shadowable exactly like "e"/"pi" already are: seeded into
+    // instead, below. A single-letter unit (m, s, A, K, N, g, J, W, V,
+    // F, T, H, C, and the Greek-command-token Ω), by contrast, IS
+    // shadowable exactly like "e"/"pi" already are: seeded into
     // freshBuiltinVars() below, so a later "m:=7" on an earlier line
     // overrides it for every line after, via the exact same plain
     // object-key overwrite collectDefinitions() already does for "e:=5".
@@ -964,9 +980,21 @@
     // makeQuantity()'s own comment) — every Phase-1 unit's seed is 1
     // (kg IS the SI mass base; m/s/A/K/mol/cd are literal SI bases; N/Pa/
     // Hz are named derived units whose own "one of me" is exactly one SI
-    // newton/pascal/hertz). A future Phase-2 unit like "ft" would seed
-    // 0.3048 — this table's shape already supports that, nothing here is
-    // Phase-1-specific beyond the actual entries listed.
+    // newton/pascal/hertz). Every other named-SI-derived unit added below
+    // (J, W, V, F, T, H, C, Wb, Ω) is seed 1 for the same reason; a
+    // non-SI unit (ft, in, mi, cm, mm, km, lb, oz, g, hr, gal) seeds
+    // its real SI-equivalent value instead (e.g. ft seeds 0.3048).
+    //
+    // Ordering within this table matters ONLY for the multi-letter
+    // subset (MULTI_LETTER_UNITS below, which preserves this table's own
+    // order): parseAtom's literal-substring match walks that list in
+    // order, so wherever one multi-letter symbol is a literal prefix of
+    // another, the LONGER one must be listed first or the shorter one
+    // would shadow it and leave a dangling character (no pair in the
+    // current table actually collides this way — the one near-miss,
+    // "mi"/"min", is moot now that "min" has been dropped entirely, see
+    // its own comment below). Single-letter entries have no such concern
+    // (matchIdentifierAt only ever consumes exactly one token).
     var UNIT_TABLE = [
       { symbol: "m", dims: makeDims({ length: 1 }), seed: 1, singleLetter: true },
       { symbol: "s", dims: makeDims({ time: 1 }), seed: 1, singleLetter: true },
@@ -975,34 +1003,119 @@
       // N: a NAMED DERIVED unit, included specifically to prove the
       // named-unit display table below isn't hardcoded to one entry.
       { symbol: "N", dims: makeDims({ mass: 1, length: 1, time: -2 }), seed: 1, singleLetter: true },
+      // Phase 2 single-letter additions: gram (mass, non-SI seed — the
+      // SI mass BASE is kg, see BASE_UNIT_SYMBOLS below, so g seeds
+      // 0.001 of it) plus seven named SI-derived electrical/energy units
+      // (seed 1, same reasoning as N above). Confirmed none of these
+      // bare letters collides with any other reserved meaning in this
+      // file (Greek letters are only ever reached via a Ctrl-modified
+      // keystroke, never a bare typed letter; transpose's "^T" and
+      // determinant/trace/etc.'s own paren-gated names are each checked
+      // in a different grammar position that never consults this table).
+      { symbol: "g", dims: makeDims({ mass: 1 }), seed: 0.001, singleLetter: true },
+      { symbol: "J", dims: makeDims({ mass: 1, length: 2, time: -2 }), seed: 1, singleLetter: true },
+      { symbol: "W", dims: makeDims({ mass: 1, length: 2, time: -3 }), seed: 1, singleLetter: true },
+      { symbol: "V", dims: makeDims({ mass: 1, length: 2, time: -3, current: -1 }), seed: 1, singleLetter: true },
+      { symbol: "F", dims: makeDims({ current: 2, time: 4, mass: -1, length: -2 }), seed: 1, singleLetter: true },
+      { symbol: "T", dims: makeDims({ mass: 1, time: -2, current: -1 }), seed: 1, singleLetter: true },
+      { symbol: "H", dims: makeDims({ mass: 1, length: 2, time: -2, current: -2 }), seed: 1, singleLetter: true },
+      { symbol: "C", dims: makeDims({ current: 1, time: 1 }), seed: 1, singleLetter: true },
+      // Ohm (Ω) can't be a plain Latin letter, so it rides the existing
+      // Greek-command-token identifier grammar instead: "\Omega" is
+      // already a valid identifier via matchIdentifierAt() (it's the
+      // same token Ctrl+Shift+O / GREEK_UPPER.o produces), and
+      // freshBuiltinVars()/collectDefinitions() key a singleLetter unit
+      // on its literal `symbol` string regardless of shape, so this
+      // needs zero matching-machinery changes — confirmed by actually
+      // typing it into a real MathQuill field, not just reading the
+      // code (see the units-phase2 session notes). Mirrors the already-
+      // accepted m/s/A/K/N dual-purpose precedent: Ω doubling as both
+      // the ohm unit and the plain Greek-letter variable Omega is the
+      // same kind of shadowable ambiguity those already have, not a new
+      // kind.
+      { symbol: "\\Omega", dims: makeDims({ mass: 1, length: 2, time: -3, current: -2 }), seed: 1, singleLetter: true },
       // Multi-letter units — matched as an explicit ORDERED list in
       // parseAtom below (longer symbols before any shorter one that
-      // could be a prefix of it) so Phase 2's additions — some of which
-      // will share prefixes — don't have to restructure this. None of
-      // Phase 1's five collide with each other, but the ordering is kept
-      // explicit on purpose.
+      // could be a prefix of it). No pair in this list (old or new)
+      // actually shares a prefix — "mi" would have been a prefix of
+      // "min", but "min" was dropped (see its own comment below) before
+      // that ordering constraint ever had to matter.
       { symbol: "kg", dims: makeDims({ mass: 1 }), seed: 1, singleLetter: false },
       { symbol: "mol", dims: makeDims({ amount: 1 }), seed: 1, singleLetter: false },
       { symbol: "cd", dims: makeDims({ luminosity: 1 }), seed: 1, singleLetter: false },
       { symbol: "Pa", dims: makeDims({ mass: 1, length: -1, time: -2 }), seed: 1, singleLetter: false },
-      { symbol: "Hz", dims: makeDims({ time: -1 }), seed: 1, singleLetter: false }
+      { symbol: "Hz", dims: makeDims({ time: -1 }), seed: 1, singleLetter: false },
+      // Time: hours. "min" (minutes) was DROPPED — confirmed live
+      // (throwaway MathField, same empirical method as every other
+      // check in this file) that typing "min" is not three literal
+      // characters at all: MathQuill's own autoOperatorNames table
+      // already auto-recognizes "min" as the native minimum-function
+      // operator, rendering it as the single atomic token "\min" the
+      // instant the third character lands — the same class of gotcha
+      // documented elsewhere in this file for "asin" never tokenizing
+      // as the inverse-sine function. There is no way to literally type
+      // "min" into a field at all, so a literal-substring unit match on
+      // "min" (the mechanism every other multi-letter unit here uses)
+      // can never fire — confirmed by reading back .latex() after
+      // typing it, not assumed. Recognizing "\min" itself as the minute
+      // unit would require a parseAtom special case (a grammar change,
+      // out of this phase's pure-data-entry scope) and would also create
+      // a real ambiguity ("\min" has no builtin function meaning in this
+      // evaluator today, but giving the bare token a unit meaning forever
+      // forecloses ever adding a real min()/max() builtin later without
+      // a collision). "hr" alone covers this category for now.
+      { symbol: "hr", dims: makeDims({ time: 1 }), seed: 3600, singleLetter: false },
+      // Length (imperial + convenient metric multiples/submultiples of
+      // the SI base "m", which stays single-letter/shadowable above).
+      { symbol: "ft", dims: makeDims({ length: 1 }), seed: 0.3048, singleLetter: false },
+      { symbol: "in", dims: makeDims({ length: 1 }), seed: 0.0254, singleLetter: false },
+      { symbol: "mi", dims: makeDims({ length: 1 }), seed: 1609.344, singleLetter: false },
+      { symbol: "cm", dims: makeDims({ length: 1 }), seed: 0.01, singleLetter: false },
+      { symbol: "mm", dims: makeDims({ length: 1 }), seed: 0.001, singleLetter: false },
+      { symbol: "km", dims: makeDims({ length: 1 }), seed: 1000, singleLetter: false },
+      // Mass (imperial; metric "g" is single-letter above).
+      { symbol: "lb", dims: makeDims({ mass: 1 }), seed: 0.45359237, singleLetter: false },
+      { symbol: "oz", dims: makeDims({ mass: 1 }), seed: 0.028349523125, singleLetter: false },
+      // Volume: US liquid gallon (NOT the imperial gallon, which is a
+      // different value, 0.00454609 m^3) — 0.003785411784 m^3. dims is
+      // length^3, which exercises the compound-label fallback below
+      // rather than landing on any named unit (confirmed live).
+      { symbol: "gal", dims: makeDims({ length: 3 }), seed: 0.003785411784, singleLetter: false },
+      // Weber: a named SI-derived unit, but NOT single-letter despite
+      // being only two characters — "Wb" doesn't fit the single-Latin-
+      // letter identifier grammar (matchIdentifierAt only ever consumes
+      // exactly one character/token), so it's permanently reserved here
+      // like any other multi-letter symbol, never shadowable.
+      { symbol: "Wb", dims: makeDims({ mass: 1, length: 2, time: -2, current: -1 }), seed: 1, singleLetter: false }
     ];
     // symbol -> seed value, for appendQuantityResult()'s "displayUnit
     // names a real unit" branch (divide the canonical SI value back down
     // to a count of that unit).
     var UNIT_SEED_VALUES = {};
     UNIT_TABLE.forEach(function (u) { UNIT_SEED_VALUES[u.symbol] = u.seed; });
+    // symbol -> plain display text, for appendQuantityResult()'s unit
+    // label span (plain text, never MathQuill) — needed only for the one
+    // unit symbol here that is itself a LaTeX command token rather than
+    // its own literal display text (Ω — see UNIT_TABLE's own comment on
+    // why it rides the Greek-command-token grammar). Every other symbol
+    // in UNIT_TABLE is already its own correct display text, so this map
+    // only needs an entry when a future unit shares that same shape.
+    var UNIT_LABEL_DISPLAY = { "\\Omega": "Ω" };
     // The multi-letter subset, in the table's own explicit order — see
     // parseAtom's own literal-substring check below for how these are
     // actually recognized while parsing (no shadowing, no paren-gate;
     // unlike trace/solve/mean/etc., a unit is never a function call).
     var MULTI_LETTER_UNITS = UNIT_TABLE.filter(function (u) { return !u.singleLetter; });
-    // Named DERIVED units only (N, Pa, Hz — not every base unit) — used
+    // Named DERIVED units only (not every base unit, and NOT a non-SI
+    // alternate unit of an existing dims combo like ft/km/lb/gal/etc. —
+    // those stay out of this list on purpose, since findNamedUnitForDims
+    // below returns the FIRST dims match and we don't want, say, "ft"
+    // arbitrarily winning every length-dims */÷ result over "m") — used
     // by quantityBroadcast()'s */÷ result and appendQuantityResult()'s
     // display fallback: an exact dims match here gives a real unit name
     // (e.g. "19.6 N") instead of an auto-generated compound label (e.g.
     // "kg·m/s^2") for a result that happens to land on one of these.
-    var NAMED_DERIVED_SYMBOLS = ["N", "Pa", "Hz"];
+    var NAMED_DERIVED_SYMBOLS = ["N", "Pa", "Hz", "J", "W", "V", "F", "T", "H", "C", "Wb", "\\Omega"];
     var NAMED_DERIVED_UNITS = UNIT_TABLE.filter(function (u) {
       return NAMED_DERIVED_SYMBOLS.indexOf(u.symbol) !== -1;
     });
@@ -3286,7 +3399,20 @@
       MQ.StaticMath(numEl).latex(formatNumber(displayValue));
       var unitEl = document.createElement("span");
       unitEl.className = "result-quantity-unit";
-      unitEl.textContent = label;
+      // `label` is sometimes a LaTeX command token, not literal display
+      // text — specifically "\Omega" (the ohm unit, see UNIT_TABLE),
+      // which can reach here as either quantity.displayUnit itself or
+      // findNamedUnitForDims()'s return value. This span is plain text
+      // (never MathQuill, per the comment above), so it needs translating
+      // to the actual glyph by hand — confirmed live that without this,
+      // an ohm result renders the literal text "\Omega", not "Ω" (caught
+      // by actually typing it into the real app, not by reading the
+      // code: the label plumbing elsewhere in this function has no
+      // reason to suspect a command-token string, since every other
+      // unit symbol in the table already IS its own literal display
+      // text). Extend UNIT_LABEL_DISPLAY (not this line) if a future
+      // unit ever needs another such translation.
+      unitEl.textContent = UNIT_LABEL_DISPLAY[label] || label;
       wrap.appendChild(numEl);
       wrap.appendChild(unitEl);
       line.el.appendChild(wrap);

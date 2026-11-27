@@ -666,3 +666,53 @@ the ones below already were.
   remembering this same "every dispatcher-like site needs a case for
   the new thing" pattern generalizes beyond `line.type` switches to any
   per-result-kind cleanup list too.
+- **2026-11-27** — Units Phase 2 (expanding `UNIT_TABLE` with the full
+  practical unit list — pure data entry on top of Phase 1's machinery).
+  Two real findings only live-testing caught, neither visible from
+  reading the code:
+  1. **Typing "min" is not three literal characters.** MathQuill's
+     `autoOperatorNames` table already auto-recognizes "min" as the
+     native minimum-function operator — the instant the third character
+     lands, `.latex()` reads back the single atomic token `"\min"`, not
+     the string "min". This is the exact same class of gotcha as the
+     already-documented "asin" case (2026-11-17 entries above), just
+     for a unit symbol instead of a function name. There is no way to
+     literally type "min" into a field at all, so a Phase-1-style
+     literal-substring unit match on "min" can never fire — confirmed
+     by reading back `.latex()` after typing it (`10\cdot\min`, not
+     `10\cdot min`), not assumed from "min" looking like an ordinary
+     3-letter symbol the way "ft"/"kg"/"mol" are. Dropped "min" from
+     the candidate list entirely rather than special-casing `\min` in
+     parseAtom (that would be a real grammar change, out of this
+     phase's pure-data-entry scope, and would also permanently foreclose
+     ever giving `\min`/`\max` a real minimum/maximum-function meaning
+     later). Before adding ANY new multi-letter unit/identifier symbol
+     to this file, actually type it into a throwaway MathField and read
+     back `.latex()` — don't assume a short lowercase string is safe
+     just because it isn't one of the obviously-famous trig names.
+  2. **A unit's plain-text display label can itself be a LaTeX command
+     token, and the display code has no reason to suspect that.**
+     `appendQuantityResult()`'s unit-label span is deliberately plain
+     `textContent`, never MathQuill (a compound label can contain "/"/
+     "·" this MathQuill build isn't guaranteed to render — see Phase
+     1's own comment). That's fine for every ASCII unit symbol, which
+     IS its own correct display text — but Ω's unit symbol has to be
+     the Greek-command-token string `"\Omega"` (there's no Latin-letter
+     alternative, and that's the token `matchIdentifierAt()` already
+     recognizes). Left unhandled, `quantity.displayUnit === "\Omega"`
+     (or `findNamedUnitForDims()` returning it) renders the literal text
+     "\Omega" in the result, not the Ω glyph — confirmed live by typing
+     `\Omega=` and `V/A=` into the real page before trusting it worked,
+     exactly as the manager's spec insisted. Fixed with a tiny
+     `UNIT_LABEL_DISPLAY` symbol -> display-text lookup consulted only
+     at the point `textContent` is set, rather than normalizing earlier
+     (dims-matching/seed-lookup logic all correctly keys on the literal
+     token, so normalizing it away earlier would have broken THAT).
+     General lesson: whenever a table's `symbol` field is reused both
+     as a matching key AND as literal display text somewhere else in
+     the file, adding an entry whose natural symbol is a multi-
+     character command token (not its own display form) breaks the
+     display assumption silently — grep for where else `.symbol`/
+     `displayUnit`/a table's own keys get rendered as plain text, not
+     just where they get matched, before trusting a new non-ASCII-
+     named entry "just works" through existing generic code.
